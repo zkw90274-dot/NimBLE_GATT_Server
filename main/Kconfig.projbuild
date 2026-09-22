@@ -1,0 +1,90 @@
+menu "Example Configuration"
+
+    orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
+
+    choice BLINK_LED
+        prompt "Blink LED type"
+        default BLINK_LED_GPIO
+        help
+            Select the LED type. A normal level controlled LED or an addressable LED strip.
+            The default selection is based on the Espressif DevKit boards.
+            You can change the default selection according to your board.
+
+        config BLINK_LED_GPIO
+            bool "GPIO"
+        config BLINK_LED_STRIP
+            bool "LED strip"
+    endchoice
+
+    choice BLINK_LED_STRIP_BACKEND
+        depends on BLINK_LED_STRIP
+        prompt "LED strip backend peripheral"
+        default BLINK_LED_STRIP_BACKEND_RMT if SOC_RMT_SUPPORTED
+        default BLINK_LED_STRIP_BACKEND_SPI
+        help
+            Select the backend peripheral to drive the LED strip.
+
+        config BLINK_LED_STRIP_BACKEND_RMT
+            depends on SOC_RMT_SUPPORTED
+            bool "RMT"
+        config BLINK_LED_STRIP_BACKEND_SPI
+            bool "SPI"
+    endchoice
+
+    config BLINK_GPIO
+        int "Blink GPIO number"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+        default 8
+        help
+            GPIO number (IOxx) to blink on and off the LED.
+            Some GPIOs are used for other purposes (flash connections, etc.) and cannot be used to blink.
+
+endmenu
+
+menu "IMU (BMI270) configuration"
+
+    config IMU_I2C_SCL_GPIO
+        int "I2C SCL GPIO"
+        default 1
+        help
+            GPIO used as I2C clock for the BMI270.
+            The default comes from ESP-Spot Lite/main/board_pins.h (PIN_I2C_SCL),
+            which is the single source of truth for this board's pinout.
+
+    config IMU_I2C_SDA_GPIO
+        int "I2C SDA GPIO"
+        default 2
+        help
+            GPIO used as I2C data for the BMI270.
+            The default comes from ESP-Spot Lite/main/board_pins.h (PIN_I2C_SDA).
+
+    config IMU_I2C_FREQ_HZ
+        int "I2C clock frequency (Hz)"
+        default 100000
+        help
+            The board has no external pull-ups on SCL/SDA, so 100 kHz is the
+            value the ESP-Spot Lite self-test settled on. Raise to 400000 only
+            after confirming external pull-ups are present.
+
+    config IMU_INT_GPIO
+        int "BMI270 interrupt (INT1) GPIO"
+        default 5
+        help
+            GPIO wired to the BMI270 INT1 pin. The default comes from
+            ESP-Spot Lite/main/board_pins.h (PIN_IMU_INT).
+            The driver maps the data-ready signal onto INT1, so a sample is
+            taken on every edge the sensor produces instead of blind polling.
+            If the line is ever unavailable, the sampling loop silently falls
+            back to its timeout and keeps working at IMU_NOTIFY_PERIOD_MS.
+
+    config IMU_NOTIFY_PERIOD_MS
+        int "BLE notify period (ms)"
+        default 50
+        help
+            How often the attitude is pushed to subscribed clients. 50 ms is
+            20 Hz, which fits comfortably inside a typical BLE connection
+            interval. The sensor itself is sampled on every data-ready
+            interrupt (200 Hz) - this value only paces the radio, and doubles
+            as the sampling loop's fallback timeout.
+
+endmenu

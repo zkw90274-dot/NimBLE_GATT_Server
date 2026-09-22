@@ -1,0 +1,10 @@
+dependencies:
+  espressif/led_strip: "^2.4.1"
+  # BMI270 6-axis IMU. The component carries the Bosch configuration firmware
+  # (toy set) as a prebuilt blob and performs the 8 KB upload sequence itself,
+  # so no configuration array needs to be embedded in this project.
+  espressif/bmi270_sensor: "^0.1.0"
+  # bmi270_sensor_create() takes an i2c_bus_handle_t. Depend on the component
+  # directly rather than relying on the transitive dependency, since imu.c
+  # includes i2c_bus.h and calls i2c_bus_create() itself.
+  espressif/i2c_bus: "^1.5.0"

@@ -1,0 +1,19 @@
+# Custom partition table for the 16 MB flash on this board.
+#
+# The IDF default (partitions_singleapp.csv) hardcodes the factory app at 1 MB
+# regardless of CONFIG_ESPTOOLPY_FLASHSIZE, so simply switching the flash size
+# to 16MB would have left the app partition at 1 MB and the extra 14 MB unused.
+# This table is what actually hands the space to the application.
+#
+# nvs and phy_init keep the sizes IDF uses by default, and factory still starts
+# at 0x10000, so the layout below the app is unchanged and existing NVS
+# contents (BLE bonds) survive the switch.
+#
+# The remaining ~11.9 MB after factory is deliberately left unallocated: it is
+# free space to carve up later (OTA slots, a file system) without moving the
+# app.
+#
+# Name,   Type, SubType, Offset,  Size,  Flags
+nvs,      data, nvs,     ,        0x6000,
+phy_init, data, phy,     ,        0x1000,
+factory,  app,  factory, ,        4M,

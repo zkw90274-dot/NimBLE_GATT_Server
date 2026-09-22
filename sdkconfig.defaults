@@ -1,0 +1,15 @@
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=n
+
+CONFIG_BLINK_LED_GPIO=y
+CONFIG_BLINK_GPIO=8
+
+# ---- Flash and partitions ----
+# The board carries a 16 MB flash. Note that raising only the flash size is not
+# enough: the IDF default partition table hardcodes the factory app at 1 MB
+# regardless, so the extra room stays unreachable until a custom table is
+# selected. See partitions.csv.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
