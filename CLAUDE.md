@@ -13,6 +13,8 @@ ESP32-S3 上的 BLE GATT 服务端：读取板载 **BMI270 六轴 IMU**，解算
 > - **新增组件** → 新建 `docs/<组件名>.md`，从本文件链接过去
 > - **修改已有组件** → 改对应的那份 `docs/<组件名>.md`
 > - 本文件只放**索引、速查表、跨组件的坑**。**不要把实现细节堆在这里** —— 那是 `docs/` 的职责，堆在这里等于毁掉渐进式披露。
+>
+> 分层规则本身（每层放什么、禁止复制清单、什么时候拆文档、怎么自检）见 [docs/docs-convention.md](docs/docs-convention.md)。
 
 ## 文档地图
 
@@ -23,6 +25,7 @@ ESP32-S3 上的 BLE GATT 服务端：读取板载 **BMI270 六轴 IMU**，解算
 | [docs/imu.md](docs/imu.md) | BMI270 驱动、姿态解算、中断采样、零偏标定 | 改 IMU 引脚 / 量程 / 算法 / 采样方式时 |
 | [docs/ble-interface.md](docs/ble-interface.md) | **服务端内部视角**：服务定义、访问回调、订阅回调、代码位置 | 改 GATT 服务端代码时 |
 | [docs/build-and-flash.md](docs/build-and-flash.md) | 构建、烧录、分区表、踩过的坑 | 构建或烧录出问题时**先看这里** |
+| [docs/docs-convention.md](docs/docs-convention.md) | **文档分层约定**：L0/L1/L2 各放什么、禁止复制清单、新增/修改组件的同步义务、什么时候拆文档 | 动 `CLAUDE.md` 或 `docs/*.md` 结构之前 |
 
 > 分工：`host-integration.md` 面向**客户端开发者**，是报文格式的权威来源；`ble-interface.md` 面向**服务端维护者**，讲代码怎么写。两者不要互相复制协议细节。
 
