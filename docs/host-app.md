@@ -140,11 +140,11 @@ MainWindow 渲染 tick（DispatcherTimer，请求 8 ms → 实测 ~64 fps）
 | `ViewModels/MainViewModel.cs` | ✅ 生产侧只写环；读数与统计只在渲染 tick 更新 |
 | `Views/Attitude3DView.xaml(.cs)` | ✅ 板体 + 姿态旋转 + 世界轴 |
 | `MainWindow.xaml` | ✅ 左侧控制/数值/流水线统计 + 仿真速率选择 + 右侧 3D/曲线 |
-| `MainWindow.xaml.cs` | ✅ 渲染 tick 拉取环形缓冲，`SignalXY` 预分配数组原地更新，roll/pitch 左轴 + yaw 右轴 |
+| `MainWindow.xaml.cs` | ✅ 渲染 tick 拉取环形缓冲，`SignalXY` 预分配数组原地更新，roll/pitch 左轴 + yaw 右轴；右键菜单四项中文化（§5.3.3） |
 | `NimBleImuHost.csproj` | ✅ TFM `net8.0-windows10.0.19041.0`，引用 `ScottPlot.WPF 5.1.59` |
 | `tests/AttitudePacketTests.cs` | ✅ 14 个用例全绿（含真机 4 组 hex 向量回放） |
 | `tests/AttitudeRingBufferTests.cs` | ✅ 10 个用例全绿（顺序、回绕、溢出计数、生产消费守恒、热路径吞吐） |
-| `scripts/capture-ui.ps1` | ✅ 启动 + UIA 点击/选速率 + 窗口截图 + 读数冻结判定，无人值守 UI 验收；`-Mode ble` 走真机，`-ExePath` 直接验收发布产物 |
+| `scripts/capture-ui.ps1` | ✅ 启动 + UIA 点击/选速率 + 窗口截图 + 读数冻结判定，无人值守 UI 验收；`-Mode ble` 走真机，`-ExePath` 直接验收发布产物，`-PlotMenu` 验右键菜单（§5.3.3） |
 | `scripts/publish-portable.ps1` | ✅ 自包含单文件发布 + 体积判据（实测 81.6 MB，见 §5.5） |
 
 ### 3.2 未完成
@@ -349,6 +349,36 @@ powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Seconds 5 -SimR
 Windows 栈），仿真压测只证明**上位机软件不是瓶颈**。真机链路已于 §5.4.1 实测到 69–75 Hz（丢帧 0），
 再往上的速率需要固件与 Windows 侧一起改，见 §3.2「高速率真机链路」。
 
+### 5.3.3 绘图区右键菜单中文化（2026-09-23，无人值守）
+
+ScottPlot 内置的右键菜单原本是全英文（Save Image / Copy to Clipboard / Autoscale / Open in New Window）。
+`MainWindow.xaml.cs` 的 `LocalizePlotMenu()` 在 `OnLoaded` 里把四项改名：
+
+| 原文 | 现在 |
+|---|---|
+| Save Image | 保存图片 |
+| Copy to Clipboard | 复制到剪贴板 |
+| Autoscale | 自动缩放 |
+| Open in New Window | 在新窗口打开 |
+
+**为什么这里能用中文，画布却不能**：菜单是 WPF 的 `ContextMenu`，由 WPF 渲染，走系统字体回退；
+标题/轴标签那些是 ScottPlot 用 Skia 画在画布上的，本机无 CJK 回退（§6 坑 20）。所以画布文案仍保持 ASCII。
+
+验收用 `capture-ui.ps1 -PlotMenu`，它做三件事，缺一不可：
+
+```powershell
+cd E:\Project\espidf_prj\NimBLE_GATT_Server\host
+powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Seconds 3 -Shots 1 -PlotMenu -Tag menu
+```
+
+1. 真鼠标右键点绘图区 → 在桌面 UIA 树里找带「自动缩放」的 `Menu` 节点，断言四项标签；
+2. 截图 `artifacts/ui/menu7-plot-menu.png`（`-Tag menu7` 那次），人眼复核菜单位置与字形；
+3. **按下「复制到剪贴板」并检查剪贴板里确实有图** —— 改名是对 `ContextMenuItem`（struct）做读-改-写，
+   只改到副本的话标签会变中文但点了没反应，光看截图查不出来。实测 `clipboard holds an image: True` ✅
+
+**未处理**：菜单以外的 ScottPlot 内置文案（保存文件对话框的 filter、「在新窗口打开」的窗口标题）
+仍是英文，要改得连 `OnInvoke` 一起替换成自己的实现。
+
 ### 5.4 真机 BLE 验收
 
 前置：固件已运行、串口可看到 `imu: roll ...`、手机/其它客户端已断开（**单连接**）。
@@ -441,6 +471,9 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 17. **`ScanAsync` 必须真的等完扫描窗口** —— 早期实现 kick 一个后台定时器就返回 `Task.CompletedTask`，于是 `StartAsync` 里"扫描→挑设备"读到的永远是空表，表现为"没手动连接过时，点开始必然失败"。UI 侧同样受影响：`IsBusy` 在扫描还在跑的时候就解除了。
 18. **WPF 数据模板里的 `ListBoxItem`，UIA `Name` 是数据项的 `ToString()`** —— 不是模板里两个 `TextBlock` 的拼接文本。脚本要按**子串**匹配（`-like "*NimBLE_GATT*"`），按前缀匹配会落空。`ComboBox` 的那条（§6.11）是同一类问题的另一个面。
 19. **状态行文案是自动化脚本的断言目标，改它要连带改脚本** —— 真机验收时状态一直停在「已连接 NimBLE_GATT，等待通知…」，即使 72 Hz 已经在跑：这条文案由连接路径写，收到数据后没人再更新。现在首个解码成功的通知会把它换成「数据流运行中（NimBLE_GATT）」，代价是「已连接」只存在几毫秒，`capture-ui.ps1` 的 500 ms 轮询抓不到，表现为**假超时**。脚本因此改成同时等「已连接」或「数据流运行中」两个文案。教训：给 UI 加/改状态文案时，先 grep 验收脚本里等的是哪个字符串。
+20. **右键菜单能中文，画布不能；而且改名会把功能改没** —— 第 7 条限制的是 Skia 画的像素文字；`ContextMenu` 是 WPF 控件，走系统字体回退，中文正常。但 ScottPlot 的 `ContextMenuItem` 是 **struct**：`items[i].Label = "自动缩放"` 改的是索引器返回的**副本**，界面上什么都不会变，必须取出→改→`items[i] = item` 写回。另外 `Menu` 属性在控件（`WpfPlotBase`）上，不在 `ScottPlot.Plot` 上，`Plot.Plot.Menu` 编译不过。改名只动了 `Label`，`OnInvoke` 靠写回原样带回去 —— 这条**看截图查不出来**，所以 `-PlotMenu` 会真按一次「复制到剪贴板」再验剪贴板里有图（§5.3.3）。
+21. **WPF 弹层不在主窗口的 UIA 子树里，而且只认前台真鼠标** —— `ContextMenu`/`Popup` 是独立顶层 HWND：从桌面根用 `TreeScope.Children` 找不到那个 `Menu` 节点，要 `Subtree`。`InvokePattern` 也打不开它 —— ScottPlot 只在真实鼠标输入上弹菜单，得 `SetCursorPos` + `mouse_event` 右键。而后台进程发的合成点击只会落到当时最前面的窗口，所以点之前必须破一次**前台锁**：假按一次 Alt（`keybd_event 0x12`）再 `SetForegroundWindow`，并且**临点前重申一次**（脚本自己跑着跑着前台就回去了）。`WpfPlot` 派生自 Panel，没有 `AutomationPeer`，压根不在树里，只能按几何定位：3D 视图（`AutomationId=Viewport`）底边到窗口底边之间那条带，取靠上的 1/3；取中点会掉进状态栏。
+22. **仿真速率下拉框的 `{DOWN}` 连发不可靠** —— 脚本假设初值是第 0 项，连发 N 次到位，但实测会漏按/多按（见过 `-SimRate 100` 选出 500 Hz、`-SimRate 250` 选出 20 Hz），而且**从不校验实际选中的速率**。§5.3.2 表里三行是状态行「（20/100/500 Hz）」与目标一致的那些运行，不一致的运行当场弃用。要把它变成可信压测开关，得改成"发完再读状态行核对，不符就重试"。
 
 ---
 

@@ -6,6 +6,10 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -SimRate 500 -Tag rate500 -Seconds 5
 #   powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Mode ble -Tag ble -Seconds 6
 #   powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -ExePath ..\publish\NimBleImuHost.exe -Tag publish
+#   powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Seconds 3 -Shots 1 -PlotMenu -Tag menu
+#
+# -PlotMenu right-clicks the plot, asserts ScottPlot's context menu shows up with the Chinese
+# labels, screenshots it, then invokes "copy to clipboard" to prove the handlers still work.
 #
 # -Mode sim drives the built-in generator; -Mode ble selects the real device, scans, picks it out
 # of the list, connects and waits for the first notifications.
@@ -24,6 +28,7 @@ param(
     [int]$ConnectTimeout = 30,
     [string]$Tag = 'sim',
     [string]$ExePath = '',
+    [switch]$PlotMenu,
     [switch]$KeepRunning
 )
 
@@ -40,6 +45,8 @@ function Resolve-Label([string]$name) {
         'connect'  { [string]([char]0x8FDE) + [char]0x63A5 + [char]0x6240 + [char]0x9009 + [char]0x8BBE + [char]0x5907 }
         'connected' { [string]([char]0x5DF2) + [char]0x8FDE + [char]0x63A5 }       # yi lian jie
         'streaming' { [string]([char]0x6570) + [char]0x636E + [char]0x6D41 + [char]0x8FD0 + [char]0x884C + [char]0x4E2D }
+        'autoscale' { [string]([char]0x81EA) + [char]0x52A8 + [char]0x7F29 + [char]0x653E }
+        'copy'      { [string]([char]0x590D) + [char]0x5236 + [char]0x5230 + [char]0x526A + [char]0x8D34 + [char]0x677F }
         'found'    { [string]([char]0x53D1) + [char]0x73B0 }                       # fa xian
         default { $name }
     }
@@ -56,6 +63,9 @@ public static class Win32 {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, IntPtr extra);
+    [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
     public struct RECT { public int Left, Top, Right, Bottom; }
 }
 "@
@@ -79,7 +89,12 @@ function Get-Window([System.Diagnostics.Process]$proc) {
         if ($proc.MainWindowHandle -ne [IntPtr]::Zero) {
             $hwnd = $proc.MainWindowHandle
             $null = [Win32]::ShowWindow($hwnd, 9)   # SW_RESTORE
+            # Windows blocks SetForegroundWindow for a background process, and without the
+            # foreground the real mouse clicks in -PlotMenu land on whatever window is on top.
+            # A fake Alt press is the documented way past that foreground lock.
+            [Win32]::keybd_event(0x12, 0, 0, [IntPtr]::Zero)          # VK_MENU down
             $null = [Win32]::SetForegroundWindow($hwnd)
+            [Win32]::keybd_event(0x12, 0, 2, [IntPtr]::Zero)          # VK_MENU up
             Start-Sleep -Milliseconds 400
             return [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
         }
@@ -141,6 +156,78 @@ function Wait-ForText([System.Windows.Automation.AutomationElement]$win, [string
 function Find-First([System.Windows.Automation.AutomationElement]$root, $property, $value) {
     $cond = New-Object System.Windows.Automation.PropertyCondition($property, $value)
     return $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+}
+
+# ScottPlot's WpfPlot derives from a Panel, so it has no AutomationPeer and never appears in the
+# UIA tree. Anchor on the 3D view (which does) and click into the band below it, which is where
+# the plot lives. The menu itself only opens on real mouse input, hence SetCursorPos + mouse_event.
+function Open-PlotMenu([System.Windows.Automation.AutomationElement]$win) {
+    $anchor = Find-First $win ([System.Windows.Automation.AutomationElement]::AutomationIdProperty) 'Viewport'
+    if (-not $anchor) { throw 'anchor element Viewport not found; cannot locate the plot area' }
+    $a = $anchor.Current.BoundingRectangle
+    $hwnd = [IntPtr]$win.Current.NativeWindowHandle
+    $r = New-Object Win32+RECT
+    [void][Win32]::GetWindowRect($hwnd, [ref]$r)
+
+    # Foreground can be lost again while the script works (the console takes it back), and a
+    # right-click on a background window never opens the menu. Re-assert it right before clicking.
+    [Win32]::keybd_event(0x12, 0, 0, [IntPtr]::Zero)
+    $null = [Win32]::SetForegroundWindow($hwnd)
+    [Win32]::keybd_event(0x12, 0, 2, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 300
+
+    # The plot lives in the band between the 3D view and the bottom of the window, so aim a third
+    # of the way into it. Aiming at the band's midpoint lands on the status bar.
+    $band = $r.Bottom - ($a.Y + $a.Height)
+    if ($band -lt 60) { throw "no room below the 3D view (band $band px); window is too short to click the plot" }
+    $x = [int]($a.X + $a.Width / 2)
+    $y = [int]($a.Y + $a.Height + 0.3 * $band)
+    Write-Host "plot band: viewport=($($a.X),$($a.Y),$($a.Width)x$($a.Height)) windowBottom=$($r.Bottom) -> click ($x, $y)"
+    [void][Win32]::SetCursorPos($x, $y)
+    Start-Sleep -Milliseconds 250
+    [Win32]::mouse_event(0x0008, 0, 0, 0, [IntPtr]::Zero)   # RIGHTDOWN
+    [Win32]::mouse_event(0x0010, 0, 0, 0, [IntPtr]::Zero)   # RIGHTUP
+    Start-Sleep -Milliseconds 900
+
+    # Other tray apps also hang Menu nodes off the desktop root, so match on our own label
+    # rather than on "any menu appeared". A WPF popup is its own top-level HWND, so the Menu node
+    # is not a direct child of the desktop root; only Subtree reaches it.
+    $menuCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Menu)
+    $itemCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::MenuItem)
+    $want = Resolve-Label 'autoscale'
+    $found = New-Object System.Collections.Generic.List[string]
+    foreach ($m in [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+                       [System.Windows.Automation.TreeScope]::Subtree, $menuCond)) {
+        $names = @($m.FindAll([System.Windows.Automation.TreeScope]::Descendants, $itemCond) |
+                   ForEach-Object { $_.Current.Name } | Where-Object { $_ })
+        $found.Add(($names -join ' / '))
+        if ($names -contains $want) {
+            Write-Host "plot menu: $($names -join ' / ')"
+            return $m
+        }
+    }
+    Write-Host "menu nodes on the desktop: [$($found -join ' || ')]"
+    throw "no plot context menu containing '$want' appeared"
+}
+
+# Renaming is a read-modify-write on a ContextMenuItem *struct*, so it is easy to keep the label
+# and lose the handler. Pressing an item and observing its side effect is the only real proof.
+function Invoke-PlotMenuItem($menu, [string]$name) {
+    if (-not $menu) { return }
+    $cond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::MenuItem)
+    $item = $menu.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond) |
+            Where-Object { $_.Current.Name -eq $name } | Select-Object -First 1
+    if (-not $item) { throw "menu item '$name' not found" }
+    $pat = $item.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    $pat.Invoke()
+    Start-Sleep -Milliseconds 800
+    "invoked '$name' -> clipboard holds an image: $([System.Windows.Forms.Clipboard]::ContainsImage())"
 }
 
 # WPF hands different controls different patterns: Button is Invoke, RadioButton is SelectionItem
@@ -262,6 +349,15 @@ try {
         Start-Sleep -Seconds $Seconds
         Show-Text $win "t=+$($i * $Seconds) s" | Out-Null
         Save-Shot $win ("{0:d2}-running.png" -f $i)
+    }
+
+    if ($PlotMenu) {
+        $menu = Open-PlotMenu $win
+        Save-Shot $win 'plot-menu.png'
+        # Invoking an item closes the menu, so the screenshot has to come first; ESC is the fallback.
+        Invoke-PlotMenuItem $menu (Resolve-Label 'copy')
+        [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+        Start-Sleep -Milliseconds 300
     }
 
     # Second click (e.g. stop): the readouts must then stop changing.

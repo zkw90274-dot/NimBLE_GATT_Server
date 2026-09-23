@@ -67,8 +67,39 @@ public partial class MainWindow : Window
         // yaw spans ±180°; on a shared axis it would flatten roll/pitch to a straight line.
         _yawAxis = plt.Axes.AddRightAxis();
 
+        LocalizePlotMenu();
+
         _timer.Start();
         Plot.Refresh();
+    }
+
+    /// <summary>
+    /// Rename ScottPlot's four built-in right-click items. Safe in Chinese even though the plot
+    /// canvas is not: this menu is a WPF ContextMenu rendered by WPF, not by Skia.
+    /// </summary>
+    private void LocalizePlotMenu()
+    {
+        if (Plot.Menu is not { } menu)
+            return;
+
+        Dictionary<string, string> chinese = new()
+        {
+            ["Save Image"] = "保存图片",
+            ["Copy to Clipboard"] = "复制到剪贴板",
+            ["Autoscale"] = "自动缩放",
+            ["Open in New Window"] = "在新窗口打开",
+        };
+
+        var items = menu.ContextMenuItems;
+        for (int i = 0; i < items.Count; i++)
+        {
+            var item = items[i];
+            if (!chinese.TryGetValue(item.Label, out string? label))
+                continue;
+
+            item.Label = label;
+            items[i] = item;
+        }
     }
 
     private void OnRenderTick(object? sender, EventArgs e)
