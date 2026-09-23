@@ -2,7 +2,7 @@
 
 ESP32-S3 上的 BLE GATT 服务端：读取板载 **BMI270 六轴 IMU**，解算姿态角，通过 GATT 特征推送给客户端。速率由 BLE **连接间隔**决定，不是固件里的固定值。
 
-当前状态：**已在真机验证**（2026-09-22，芯片 ESP32-S3 QFN56 v0.2，MAC `dc:b4:d9:21:6a:fc`）。
+当前状态：**固件与 Windows 上位机均已在真机验证，上位机单文件 exe 已产出**（固件 2026-09-22；上位机 BLE 链路与发布产物 2026-09-23，速率与丢帧见 [docs/host-app.md](docs/host-app.md) §5.4.1，发布见 §5.5）。
 
 ---
 
@@ -56,6 +56,8 @@ idf.py -p COM3 flash
 
 4. **`idf.py` 报 venv 不匹配** 是它用大小写敏感比较路径导致的误报（`e:\` vs `E:\`），**无害**。
 
+5. **广播包里没有任何服务 UUID** —— `gap.c` 只放 flags/设备名/TX power/appearance/role，所以客户端**按服务 UUID 建扫描过滤器必然扫不到设备**（上位机踩过一次，见 [docs/host-app.md](docs/host-app.md) §6.15）。要改这条就得同时改客户端：客户端身份的权威依据是设备名，见 [docs/host-integration.md](docs/host-integration.md) §1。
+
 ## 代码结构
 
 ```
@@ -76,7 +78,8 @@ main/
 host/                         Windows 上位机（.NET 8 WPF，见 docs/host-app.md）
 ├── src/NimBleImuHost/        Protocol 解码 / BLE 与仿真数据源 / SPSC 环 → 60 Hz 渲染 tick（≥100 fps 抗压）
 ├── tests/                    协议层单测（真机 hex 向量回放）+ 环形缓冲语义/吞吐单测
-└── scripts/capture-ui.ps1    启动 + UIA 点击/选仿真速率 + 截图，用于无人值守 UI 验收与压测
+├── scripts/capture-ui.ps1    启动 + UIA 驱动 + 截图：仿真压测，`-Mode ble` 走真机扫描/连接/停止/重连，`-ExePath` 验收发布产物
+└── scripts/publish-portable.ps1  自包含单文件 exe + 体积判据（产物尺寸见 docs/host-app.md §5.5）
 
 partitions.csv                自定义分区表（4 MB app）
 set_target.bat                换 target 的安全脚本，绕开坑 #1

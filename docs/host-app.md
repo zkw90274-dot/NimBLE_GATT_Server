@@ -136,7 +136,7 @@ MainWindow 渲染 tick（DispatcherTimer，请求 8 ms → 实测 ~64 fps）
 | `Ble/IImuSource.cs` / `ImuSample.cs` | ✅ 抽象与样本模型（改为 `Stopwatch` 单调刻度） |
 | `Ble/AttitudeRingBuffer.cs` | ✅ SPSC 无锁环 + 丢帧计数，单测覆盖顺序/溢出/守恒/吞吐 |
 | `Ble/SimulatedImuSource.cs` | ✅ 速率可调 1–2000 Hz，`Stopwatch` 定拍（压测用） |
-| `Ble/WindowsBleImuSource.cs` | ✅ 扫描 / 连接 / CCCD / Notify 解码（**仅编译通过，未真机实测**） |
+| `Ble/WindowsBleImuSource.cs` | ✅ 扫描 / 连接 / CCCD / Notify 解码，**已真机实测**（2026-09-23，见 §5.4.1） |
 | `ViewModels/MainViewModel.cs` | ✅ 生产侧只写环；读数与统计只在渲染 tick 更新 |
 | `Views/Attitude3DView.xaml(.cs)` | ✅ 板体 + 姿态旋转 + 世界轴 |
 | `MainWindow.xaml` | ✅ 左侧控制/数值/流水线统计 + 仿真速率选择 + 右侧 3D/曲线 |
@@ -144,16 +144,16 @@ MainWindow 渲染 tick（DispatcherTimer，请求 8 ms → 实测 ~64 fps）
 | `NimBleImuHost.csproj` | ✅ TFM `net8.0-windows10.0.19041.0`，引用 `ScottPlot.WPF 5.1.59` |
 | `tests/AttitudePacketTests.cs` | ✅ 14 个用例全绿（含真机 4 组 hex 向量回放） |
 | `tests/AttitudeRingBufferTests.cs` | ✅ 10 个用例全绿（顺序、回绕、溢出计数、生产消费守恒、热路径吞吐） |
-| `scripts/capture-ui.ps1` | ✅ 启动 + UIA 点击/选速率 + 窗口截图 + 读数冻结判定，无人值守 UI 验收 |
+| `scripts/capture-ui.ps1` | ✅ 启动 + UIA 点击/选速率 + 窗口截图 + 读数冻结判定，无人值守 UI 验收；`-Mode ble` 走真机，`-ExePath` 直接验收发布产物 |
+| `scripts/publish-portable.ps1` | ✅ 自包含单文件发布 + 体积判据（实测 81.6 MB，见 §5.5） |
 
 ### 3.2 未完成
 
 | 项 | 问题 | 优先级 |
 |---|---|---|
-| 真机 BLE | `WindowsBleImuSource` 未对 `dc:b4:d9:21:6a:fc` 联调（扫描 / CCCD / 速率 / 轴向） | P1 |
+| 真机 BLE | 链路本身已联调（§5.4.1）。**剩三项要人手**：① 扭板子核对 3D 轴向；② 断电重上看 yaw 归零；③ 断链看 Faulted 不假死 | P1 |
 | 高速率真机链路 | **固件侧已完成**（2026-09-23）：`gap.c` 改为主动协商连接参数 + `latency=0`，实测速率提升约 **3.9 倍**且零丢包，见 [host-integration.md](host-integration.md) §8。**上位机侧**若要再往上（DLE、Win11 `ThroughputOptimized`，需 TFM ≥ 10.0.22000.0）仍未动 | P1 |
-| `scripts/publish-portable.ps1` | **尚未创建**，单文件 exe 未产出 | P1 |
-| 干净虚拟机 | 未装 .NET 的系统双击验证 | P2 |
+| 干净虚拟机 | 未装 .NET 的系统双击验证（产物本身已按 `-ExePath` 在仿真 + 真机两条路径复验，见 §5.5） | P2 |
 
 > 编译门禁（`dotnet build -c Release` 0 warning 0 error）、24 个单测、仿真模式 UI 与 100/500 Hz 压测已于 2026-09-23 通过，见 §5.3.1 与 §5.3.2。
 
@@ -346,60 +346,75 @@ powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Seconds 5 -SimR
 - 热路径吞吐 > 100 万样本/秒（本机实测远高于此），即 UI 线程不会卡在拷贝上。
 
 **仍未证明的**：真机 BLE 侧的到达速率上限由链路层决定（连接间隔、NimBLE `ble_gap_update_params`、DLE、
-Windows 栈），仿真压测只证明**上位机软件不是瓶颈**。见 §3.2「高速率真机链路」。
+Windows 栈），仿真压测只证明**上位机软件不是瓶颈**。真机链路已于 §5.4.1 实测到 69–75 Hz（丢帧 0），
+再往上的速率需要固件与 Windows 侧一起改，见 §3.2「高速率真机链路」。
 
 ### 5.4 真机 BLE 验收
 
 前置：固件已运行、串口可看到 `imu: roll ...`、手机/其它客户端已断开（**单连接**）。
 
+前四项已于 2026-09-23 无人值守通过（§5.4.1）；后三项需要人手，尚未做。
+
+```powershell
+cd E:\Project\espidf_prj\NimBLE_GATT_Server\host
+powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Mode ble -Tag ble -ScanSeconds 8 -Seconds 5 -ThenButtonName stop
+```
+
+`-Mode ble` 会用 UIA 走完「选真实 BLE → 扫描 → 在列表里挑 NimBLE_GATT → 连接 → 观察 → 停止 → 再开始」，每步截图到 `host/artifacts/ui/`。
+
 1. 界面选「真实 BLE」→「扫描设备」
 2. 列表应出现 `NimBLE_GATT`（**不要**依赖 MAC）
-3. 「连接所选设备」→ 状态变为「已连接…等待通知」
+3. 「连接所选设备」→ 状态变为「已连接…等待通知」，收到第一个通知后变「数据流运行中（NimBLE_GATT）」（见 §6.19）
 4. 检查：
-   - [ ] 有持续数据，「到达速率」为几十 Hz 量级（实测约 70 Hz，随连接间隔变化，见 [host-integration.md](host-integration.md) §8），「丢帧」恒为 0
-   - [ ] 静止时 roll/pitch 稳定（固件实测约 -1° / -2.5° 量级，允许板差）
-   - [ ] **yaw 标注「相对上电」**；静止漂移应 ~0.1°/min 量级
+   - [x] 有持续数据，「到达速率」为几十 Hz 量级（实测约 70 Hz，随连接间隔变化，见 [host-integration.md](host-integration.md) §8），「丢帧」恒为 0
+   - [x] 静止时 roll/pitch 稳定（固件实测约 -1° / -2.5° 量级，允许板差）
+   - [x] **yaw 标注「相对上电」**；静止漂移应 ~0.1°/min 量级
+   - [x] 「停止」→ 数值冻结；再「开始」自动重扫重连并恢复推流
    - [ ] 扭动板子，3D 与数值一致、无严重轴反（若轴反：只改 `Attitude3DView.SetAttitude` 映射，**不要改协议**）
    - [ ] 断电重上：yaw 归零行为正确
    - [ ] 拔电池/走出范围：状态变 Faulted，UI 不假死
 
-**排错**：连上无数值 → 查 CCCD；扫描不到 → 是否已被其它客户端占用（host-integration §4.6）。
+**排错**：连上无数值 → 查 CCCD；扫描不到 → 是否已被其它客户端占用（host-integration §4.6）、或扫描过滤器按服务 UUID 过滤了（host-integration §1）。
 
-### 5.5 单文件发布（交付物）
+### 5.4.1 真机验收结果（2026-09-23，`capture-ui.ps1 -Mode ble`，板子静止平放）
 
-`scripts/publish-portable.ps1` 建议内容：
+| 检查项 | 实测 |
+|---|---|
+| 扫描 | 8 s 窗口内发现 1 台，`NimBLE_GATT`，RSSI −28 ~ −30 dBm ✅ |
+| 连接 | 订阅成功后持续推流；断开后重跑一次即恢复 ✅ |
+| 到达速率 | **69.2 – 74.8 Hz**（多轮），与固件侧 host-integration §8 的 71.6 Hz 一致 ✅ |
+| 丢帧 | **0**（每一轮都是 0）✅ |
+| 渲染 | 43 – 48 fps —— 这个计数只统计**真有新样本的帧**，真机通知是"每个连接事件约 1.6 条"的成串到达，故低于仿真里的 64 fps，属正常（见 §6.14）✅ |
+| roll / pitch | +0.36 ~ +0.63° / −2.36 ~ −2.63°，静止平稳 ✅ |
+| yaw | 28 s 内 −8.07 → −8.17，约 **−0.2°/min**，与 host-integration §8 的 0.1°/min 同量级 ✅ |
+| 曲线 / 3D | 三条轨迹连续、双轴刻度合理；板体水平时绿轴朝上、橙块为机头 ✅ |
 
-```powershell
-$ErrorActionPreference = 'Stop'
-# 修复 NuGet 环境（见 §4.2）
-if (-not [Environment]::GetEnvironmentVariable('PROGRAMFILES')) {
-  [Environment]::SetEnvironmentVariable('PROGRAMFILES', 'C:\Program Files')
-}
-if (-not [Environment]::GetEnvironmentVariable('PROGRAMFILES(X86)')) {
-  [Environment]::SetEnvironmentVariable('PROGRAMFILES(X86)', 'C:\Program Files (x86)')
-}
+**未做**：扭板子核对轴向、断电重上、断链 Faulted —— 三项都需要人手（见 §3.2）。
 
-$proj = Join-Path $PSScriptRoot '..\src\NimBleImuHost\NimBleImuHost.csproj'
-$out  = Join-Path $PSScriptRoot '..\publish'
+同一套判据后来在发布产物 `publish\NimBleImuHost.exe` 上复跑过一次，结果记在 §5.5，不在此重复。
 
-dotnet publish $proj -c Release -r win-x64 --self-contained true `
-  /p:PublishSingleFile=true `
-  /p:IncludeNativeLibrariesForSelfExtract=true `
-  /p:EnableCompressionInSingleFile=true `
-  -o $out
+### 5.5 单文件发布（交付物）—— 已完成（2026-09-23）
 
-Get-Item (Join-Path $out 'NimBleImuHost.exe') | Select-Object FullName, Length
-Write-Output "发布完成。对方解压/下载后双击即可（无需安装 .NET）。"
-```
+脚本：`host/scripts/publish-portable.ps1`（参数 `-Configuration` / `-OutDir` / `-Clean`）。它做的事：补 NuGet 需要的 `PROGRAMFILES*` 环境变量（见 §4.2）→ `dotnet publish -r win-x64 --self-contained true` + `PublishSingleFile` + `IncludeNativeLibrariesForSelfExtract`（WPF 的原生库必须解包才能加载）+ `EnableCompressionInSingleFile` → 校验产物存在并按体积报警（<25 MB 多半没带上运行时，>120 MB 多半没开压缩）。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1
+cd host
+powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 ```
+
+**实测产物**：`host/publish/NimBleImuHost.exe`，**81.6 MB**（已 gitignore）。同一份脚本产出的 exe 直接跑 UI 验收脚本，两条路径都过：
+
+| 验收 | 命令 | 结果 |
+|---|---|---|
+| 仿真 100 Hz | `capture-ui.ps1 -ExePath ../publish/NimBleImuHost.exe -SimRate 100` | 到达 99.0 / 99.2 Hz，丢帧 0，渲染 59–63 fps，曲线 + 3D 正常 |
+| 真机 BLE | 同上再加 `-Mode ble` | 扫描到 `NimBLE_GATT`（−29 dBm）→ 连接 → 69.9–72.3 Hz，丢帧 0 |
+
+`capture-ui.ps1` 的 `-ExePath` 就是为这一步加的：交付物本身要按同一套判据验收，不能只测 `bin\` 里的构建产物。相对路径按脚本所在目录解析，与调用者的 cwd 无关。
 
 **发布判据**：
-- `publish/NimBleImuHost.exe` 存在且体积约 **30–80 MB**（自包含正常范围）
-- 在**未装 .NET** 的干净 Win10/11 虚拟机双击可启动
-- 仿真模式全流程可走通
+- `publish/NimBleImuHost.exe` 存在，体积 25–120 MB（脚本自己判） ✅ 81.6 MB
+- 仿真 + 真机两条路径用 `-ExePath` 跑通 ✅
+- 在**未装 .NET** 的干净 Win10/11 虚拟机双击可启动 ⬜ —— 本机装了 .NET 8，无法证明"不依赖已安装运行时"，这是唯一还没做的判据
 
 **发布后必读**：未签名 exe 会触发 SmartScreen / Defender。交付说明写「更多信息 → 仍要运行」；正式渠道需代码签名（非本仓库范围）。
 
@@ -420,6 +435,12 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1
 11. **WPF `ComboBox` 在 UIA 里 `Current.Name` 是空的** —— 想脚本化选仿真速率，`ExpandCollapse` + 从桌面根找 `ListItem` 也不稳（弹层是独立顶层窗口）。可行做法：`SetFocus()` 后发 `{DOWN}`，闭合的下拉框会直接改选中项；真正的证据去看状态行里的「（500 Hz）」和「到达速率」。
 12. **`SignalXY` 要求 X 严格递增** —— 两条样本可能落在同一个 `Stopwatch` 刻度上（尤其高码率），追加时若 `x <= lastX` 用 `double.BitIncrement(lastX)` 顶一格，否则曲线/命中测试行为不可预期。定长数组里未用到的尾部靠 `Data.MinimumIndex/MaximumIndex` 裁掉，别靠 `plt.Clear()`。
 13. **仿真源的速率不是免费的** —— `Task.Delay` 地板 ~15.6 ms，只有当剩余时间超过一个节拍才睡，否则自旋等到期。早期版本阈值取 4 ms，结果 100 Hz 目标只跑到 96–99 Hz（睡过头）；改成 20 ms 阈值后实测 99.6–100.1 Hz。代价是 ≥100 Hz 时生成线程会占满一个核，这只影响压测模式，不影响真机。
+14. **「渲染」fps 只统计真有新样本的帧** —— 20 Hz 数据下它就是 20 fps，真机 74 Hz 下是 43–48 fps（通知按连接事件成串到达，约 1.6 条/事件，部分 tick 无新样本），仿真 100 Hz 均匀到达才有 64 fps。别把它读成"渲染掉帧"，判断依据是「丢帧」是否为 0。
+15. **Windows 的 `BluetoothLEAdvertisementFilter` 按服务 UUID 过滤会扫不到任何东西** —— 本固件的广播包里没有服务 UUID（见 host-integration §1），过滤器直接全丢。判据：现象是"扫描结束，未发现设备"，而 nRF Connect 能看见同名设备。
+16. **`GetGattServicesForUuidAsync` 不能当作首个 GATT 请求** —— 实测抛 `COMException 0x80070016`（ERROR_BAD_DEVICE），而**同一个句柄**上先调 `GetGattServicesAsync()` 完整枚举会正常返回 5 个服务（含我们要的那个）。改成"完整枚举 + 本地匹配 UUID"，特征那一级同理用 `GetCharacteristicsAsync()`。踩这条时状态栏只显示「连接失败：」—— WinRT 的 COMException 常常没有 Message，所以异常类型 + HRESULT + 失败阶段必须打进状态行（已加）。
+17. **`ScanAsync` 必须真的等完扫描窗口** —— 早期实现 kick 一个后台定时器就返回 `Task.CompletedTask`，于是 `StartAsync` 里"扫描→挑设备"读到的永远是空表，表现为"没手动连接过时，点开始必然失败"。UI 侧同样受影响：`IsBusy` 在扫描还在跑的时候就解除了。
+18. **WPF 数据模板里的 `ListBoxItem`，UIA `Name` 是数据项的 `ToString()`** —— 不是模板里两个 `TextBlock` 的拼接文本。脚本要按**子串**匹配（`-like "*NimBLE_GATT*"`），按前缀匹配会落空。`ComboBox` 的那条（§6.11）是同一类问题的另一个面。
+19. **状态行文案是自动化脚本的断言目标，改它要连带改脚本** —— 真机验收时状态一直停在「已连接 NimBLE_GATT，等待通知…」，即使 72 Hz 已经在跑：这条文案由连接路径写，收到数据后没人再更新。现在首个解码成功的通知会把它换成「数据流运行中（NimBLE_GATT）」，代价是「已连接」只存在几毫秒，`capture-ui.ps1` 的 500 ms 轮询抓不到，表现为**假超时**。脚本因此改成同时等「已连接」或「数据流运行中」两个文案。教训：给 UI 加/改状态文案时，先 grep 验收脚本里等的是哪个字符串。
 
 ---
 
@@ -442,18 +463,18 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1
 - [x] `dotnet test` 全绿（24 passed：协议 14 + 环形缓冲 10，含真机 hex 向量）  
 - [x] 仿真模式 UI 三件套（数值/曲线/3D）流畅（见 §5.3.1）  
 - [x] ≥100 fps 抗压：仿真 100 Hz 与 500 Hz 到达速率达标、丢帧恒为 0、渲染 ~60 fps（见 §5.3.2）  
-- [ ] 真机 BLE 流达到连接间隔允许的速率（实测约 70 Hz），断开可恢复  
-- [ ] `publish/NimBleImuHost.exe` 单文件在干净系统双击可运行  
+- [x] 真机 BLE 流达到连接间隔允许的速率（实测 69.2–74.8 Hz）、丢帧恒为 0、停止后可自动重连恢复（见 §5.4.1）。**轴向/断电/断链三项仍需人工**（见 §5.4）  
+- [x] `publish/NimBleImuHost.exe` 单文件产出（81.6 MB），仿真 + 真机两条路径按 `-ExePath` 验收通过（见 §5.5）  
+- [ ] 上项在**未装 .NET 的干净系统**双击可运行 —— 本机装了 .NET 8，证不了这一条  
 - [x] 本文与 `host-integration.md` 无协议矛盾  
 
 ---
 
 ## 9. 下一步执行顺序（给下一次会话）
 
-已完成（2026-09-23）：1 修 `MainWindow.xaml.cs` + ScottPlot API、2 csproj TFM + `ScottPlot.WPF 5.1.59`、3 编译门禁、4 协议单测、5 仿真 UI 验收、6 采集/渲染解耦流水线（SPSC 环 + 单调时间戳 + `SignalXY` 原地更新）+ 100/500 Hz 压测。
+已完成：1 修 `MainWindow.xaml.cs` + ScottPlot API、2 csproj TFM + `ScottPlot.WPF 5.1.59`、3 编译门禁、4 协议单测、5 仿真 UI 验收、6 采集/渲染解耦流水线（SPSC 环 + 单调时间戳 + `SignalXY` 原地更新）+ 100/500 Hz 压测、7 **真机 BLE 联调**（§5.4.1，含 4 个只在真机上暴露的缺陷：扫描过滤器、按 UUID 的首个 GATT 请求、`ScanAsync` 假异步、异常无 Message）、8 **单文件发布**（§5.5，81.6 MB，仿真 + 真机两条路径按 `-ExePath` 复验通过）。
 
-1. **真机 BLE 验收**（§5.4）—— 板子 MAC `dc:b4:d9:21:6a:fc`，**需要先上电**且无其它客户端占用；重点核对扫描到 `NimBLE_GATT`、CCCD 订阅后速率达标（实测约 70 Hz，见 [host-integration.md](host-integration.md) §8）、轴向与 3D 是否一致，以及界面上「丢帧」是否恒为 0  
-2. 写 `scripts/publish-portable.ps1` 并产出单文件（§5.5）  
-3. 干净虚拟机双击验证  
-4. 真机提速（可选，用户尚未授权动固件）：固件 50 → 100 fps 需要连接参数 + DLE 一起改，见 §7 最后一行  
-5. 断线自动重连（本轮按决定**未做**，目前断开只把状态置为 Faulted）
+1. **人工三项**（§5.4 清单末尾三条）：扭板子核对 3D 轴向（轴反只改 `Attitude3DView.SetAttitude`，不动协议）、断电重上看 yaw 归零、断链看 Faulted 不假死。板子在手边随时可做，`capture-ui.ps1 -Mode ble -Shots 7 -Seconds 4` 会每 4 秒存一张，够事后对账  
+2. **干净虚拟机双击验证**（§8 最后一条）—— 这是唯一还卡在"本机装了 .NET 8 所以证不了"的判据；需要一台没装 .NET 的 Win10/11 虚拟机或另一台机器，拷 `host/publish/NimBleImuHost.exe` 过去双击  
+3. 真机再提速（未授权）：固件侧 2026-09-23 已把连接参数协商与限速器改到位（~72 Hz，见 host-integration §8）；还要往上得动 DLE 与 Win11 `ThroughputOptimized`（TFM 需 ≥ 10.0.22000.0），见 §7 倒数第二行  
+4. 断线**自动**重连（本轮按决定未做）。注意 §5.4.1 通过的是"人再点一次开始"这条路径，链路自己断了不会自动接回来
