@@ -441,6 +441,8 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 
 `capture-ui.ps1` 的 `-ExePath` 就是为这一步加的：交付物本身要按同一套判据验收，不能只测 `bin\` 里的构建产物。相对路径按脚本所在目录解析，与调用者的 cwd 无关。
 
+**产物是快照，不是软链**（2026-09-23 被自己咬过一次）：中文化提交后我去验的是 `bin\`，用户双击 `publish\` 里 19:01 那份旧 exe，看到的仍是英文菜单。任何代码改动之后都要重跑 `publish-portable.ps1`，再按 `-ExePath` 复验。最近一次重发（含右键菜单中文化）产物 81.6 MB，`-ExePath ../publish/NimBleImuHost.exe -PlotMenu` 复验：四个中文标签在、按下「复制到剪贴板」剪贴板有图、仿真 20 Hz 到达 19.8 Hz 丢帧 0（截图 `artifacts/ui/pubmenu-plot-menu.png`）。100/500 Hz 与真机 BLE **未**在新 exe 上复跑——这次改动只在窗口加载时改四个标签，不碰采集/渲染热路径。
+
 **发布判据**：
 - `publish/NimBleImuHost.exe` 存在，体积 25–120 MB（脚本自己判） ✅ 81.6 MB
 - 仿真 + 真机两条路径用 `-ExePath` 跑通 ✅
@@ -474,6 +476,7 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 20. **右键菜单能中文，画布不能；而且改名会把功能改没** —— 第 7 条限制的是 Skia 画的像素文字；`ContextMenu` 是 WPF 控件，走系统字体回退，中文正常。但 ScottPlot 的 `ContextMenuItem` 是 **struct**：`items[i].Label = "自动缩放"` 改的是索引器返回的**副本**，界面上什么都不会变，必须取出→改→`items[i] = item` 写回。另外 `Menu` 属性在控件（`WpfPlotBase`）上，不在 `ScottPlot.Plot` 上，`Plot.Plot.Menu` 编译不过。改名只动了 `Label`，`OnInvoke` 靠写回原样带回去 —— 这条**看截图查不出来**，所以 `-PlotMenu` 会真按一次「复制到剪贴板」再验剪贴板里有图（§5.3.3）。
 21. **WPF 弹层不在主窗口的 UIA 子树里，而且只认前台真鼠标** —— `ContextMenu`/`Popup` 是独立顶层 HWND：从桌面根用 `TreeScope.Children` 找不到那个 `Menu` 节点，要 `Subtree`。`InvokePattern` 也打不开它 —— ScottPlot 只在真实鼠标输入上弹菜单，得 `SetCursorPos` + `mouse_event` 右键。而后台进程发的合成点击只会落到当时最前面的窗口，所以点之前必须破一次**前台锁**：假按一次 Alt（`keybd_event 0x12`）再 `SetForegroundWindow`，并且**临点前重申一次**（脚本自己跑着跑着前台就回去了）。`WpfPlot` 派生自 Panel，没有 `AutomationPeer`，压根不在树里，只能按几何定位：3D 视图（`AutomationId=Viewport`）底边到窗口底边之间那条带，取靠上的 1/3；取中点会掉进状态栏。
 22. **仿真速率下拉框的 `{DOWN}` 连发不可靠** —— 脚本假设初值是第 0 项，连发 N 次到位，但实测会漏按/多按（见过 `-SimRate 100` 选出 500 Hz、`-SimRate 250` 选出 20 Hz），而且**从不校验实际选中的速率**。§5.3.2 表里三行是状态行「（20/100/500 Hz）」与目标一致的那些运行，不一致的运行当场弃用。要把它变成可信压测开关，得改成"发完再读状态行核对，不符就重试"。
+23. **改完代码别忘了重发交付物** —— `publish\NimBleImuHost.exe` 是发布那一刻的快照，不会跟着 `bin\` 变。验收脚本默认打 `bin\`，用户双击的却是 `publish\`，两边不一致时"我验过了"就是假话（中文化那次就这么被戳穿了一回）。凡是给用户跑的产物，改完代码就重跑 `publish-portable.ps1`，再用 `-ExePath` 复验（§5.5）。
 
 ---
 
