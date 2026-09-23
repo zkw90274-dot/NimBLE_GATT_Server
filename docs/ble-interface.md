@@ -1,6 +1,8 @@
-# BLE 接口 —— GATT 服务与载荷格式
+# BLE 接口 —— 服务端实现视角
 
 > 上级索引：[../CLAUDE.md](../CLAUDE.md)
+> 📌 **报文格式（发送格式）的权威定义在 [host-integration.md](host-integration.md)** —— 那份面向客户端开发者。
+> 本文讲**服务端代码怎么写**，不重复协议细节。
 
 设备名：`NimBLE_GATT`（`main/include/common.h` 的 `DEVICE_NAME`）。
 服务端角色：广播 → 可连接 → 提供下面三个服务。
@@ -17,17 +19,13 @@
 
 ### 载荷格式
 
-固定 **12 字节**，3 个小端 IEEE-754 float32，单位**度**：
+👉 **见 [host-integration.md](host-integration.md) §2** —— 那是对外契约的唯一权威定义，此处不再重复，以免两边各改一半。
 
-| 偏移 | 类型 | 含义 | 范围 |
-|---|---|---|---|
-| 0 | float32 LE | `roll` | -180 .. +180 |
-| 4 | float32 LE | `pitch` | -90 .. +90 |
-| 8 | float32 LE | `yaw` | -180 .. +180，**相对开机时刻，会漂移** |
+服务端侧实现要点：
 
-> ⚠️ **yaw 不是绝对方位**。BMI270 无磁力计，航向角不可观测，这里的 yaw 是陀螺仪 Z 轴积分。详见 [imu.md](imu.md) §4。
-
-> 历史：这个特征**曾经**是 6×int16 原始计数（acc XYZ + gyr XYZ）。改成欧拉角后，原始计数不再通过 BLE 暴露；如果将来需要，用法是 `imu_read()` 拿 `imu_sample_t`，换算常数在 `imu.h`。
+- 序列化在 `gatt_svc.c` 的 `imu_attitude_to_le()` / `put_f32_le()`，把 `imu_attitude_t` 的三个 float 按小端写进 12 字节
+- `put_f32_le()` 用 `memcpy` 取 float 的**位模式**，不是数值转换 —— 线上是 IEEE-754，必须原样搬运
+- 历史：这个特征**曾经**是 6×int16 原始计数（acc XYZ + gyr XYZ）。改成欧拉角后原始计数不再通过 BLE 暴露；将来若需要，用 `imu_read()` 拿 `imu_sample_t`，换算常数在 `imu.h`
 
 ### 订阅与通知
 

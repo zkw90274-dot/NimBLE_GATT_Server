@@ -69,6 +69,16 @@ env/
 .ccls-cache/
 compile_commands.json
 
+# .NET host app (host/) build outputs, local NuGet cache, UI capture artifacts
+host/bin/
+host/src/*/bin/
+host/src/*/obj/
+host/tests/*/bin/
+host/tests/*/obj/
+host/.nuget/
+host/artifacts/
+host/publish/
+
 # Windows specific
 Thumbs.db
 ehthumbs.db

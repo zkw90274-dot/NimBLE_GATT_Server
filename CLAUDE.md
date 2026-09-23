@@ -18,9 +18,13 @@ ESP32-S3 上的 BLE GATT 服务端：读取板载 **BMI270 六轴 IMU**，解算
 
 | 文档 | 内容 | 什么时候读 |
 |---|---|---|
+| [docs/host-integration.md](docs/host-integration.md) | **上位机对接**：报文格式（唯一权威定义）、连接流程、必读注意事项、解码示例、排错表 | **写上位机 / 对接客户端时先看这份** |
+| [docs/host-app.md](docs/host-app.md) | **Windows 上位机工程**（`host/`，.NET 8 WPF）：选型依据、已完成/未完成、搭建复现、验证清单、单文件发布 | 改 `host/` 下代码或要出 exe 时 |
 | [docs/imu.md](docs/imu.md) | BMI270 驱动、姿态解算、中断采样、零偏标定 | 改 IMU 引脚 / 量程 / 算法 / 采样方式时 |
-| [docs/ble-interface.md](docs/ble-interface.md) | GATT 服务与特征、UUID、载荷格式、订阅流程 | 对接客户端、改 BLE 接口时 |
+| [docs/ble-interface.md](docs/ble-interface.md) | **服务端内部视角**：服务定义、访问回调、订阅回调、代码位置 | 改 GATT 服务端代码时 |
 | [docs/build-and-flash.md](docs/build-and-flash.md) | 构建、烧录、分区表、踩过的坑 | 构建或烧录出问题时**先看这里** |
+
+> 分工：`host-integration.md` 面向**客户端开发者**，是报文格式的权威来源；`ble-interface.md` 面向**服务端维护者**，讲代码怎么写。两者不要互相复制协议细节。
 
 ## 速查
 
@@ -65,6 +69,11 @@ main/
     ├── gap.c                 广播与连接管理
     ├── heart_rate_mock.c     心跳服务（**mock 数据**，非真实传感器）
     └── led.c                 WS2812
+
+host/                         Windows 上位机（.NET 8 WPF，见 docs/host-app.md）
+├── src/NimBleImuHost/        Protocol 解码 / BLE 与仿真数据源 / SPSC 环 → 60 Hz 渲染 tick（≥100 fps 抗压）
+├── tests/                    协议层单测（真机 hex 向量回放）+ 环形缓冲语义/吞吐单测
+└── scripts/capture-ui.ps1    启动 + UIA 点击/选仿真速率 + 截图，用于无人值守 UI 验收与压测
 
 partitions.csv                自定义分区表（4 MB app）
 set_target.bat                换 target 的安全脚本，绕开坑 #1
