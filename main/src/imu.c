@@ -22,11 +22,122 @@
  */
 #include "driver/gpio.h"
 
+/*
+ * Vendored Fusion AHRS - provenance and licence are documented in
+ * fusion/README.md. The variant used here is FusionAhrsUpdateNoMagnetometer():
+ * this board has no magnetometer, so heading stays unobservable.
+ */
+#include "FusionAhrs.h"
+#include "FusionBias.h"
+#include "FusionMath.h"
+
 /* Private defines */
 #define IMU_I2C_PORT I2C_NUM_0
 
-/* Degrees per radian, same constant the ESP-Spot Lite self-test uses. */
-#define RAD_TO_DEG (57.29578f)
+/*
+ * Fusion AHRS settings.
+ *
+ * IMU_ODR_HZ must match the ODR configured in imu_configure(). Fusion derives
+ * its rejection timeout in *samples* from this, and its startup-gain ramp in
+ * seconds, so a wrong value silently changes both.
+ *
+ * IMU_AHRS_GAIN is used as-is (Fusion applies it as
+ * q += q * (gyro + gain * feedback) * dt, so the convergence time constant is
+ * 1/gain seconds and does not scale with sample rate). 0.5 is the library
+ * default, but the first dynamic test showed a slow ~10 s, +/-0.8 degree
+ * wander in pitch while the board sat still - the classic sign of the loop
+ * trusting the accelerometer too much. Lowered to 0.2 to trade tilt-response
+ * speed for a calmer resting angle; see the dynamic test for the comparison.
+ *
+ * Measured on the host with the same source files and a 5 deg accelerometer
+ * step (2026-09-23): gain 0.2 settles 63% of the step in 5.0 s, i.e. exactly
+ * 1/gain. That measurement is the yardstick any future gain change has to beat.
+ */
+#define IMU_ODR_HZ 200.0f
+#define IMU_AHRS_GAIN 0.2f
+#define IMU_GYRO_RANGE_DPS 500.0f
+
+/*
+ * Fusion's own gyroscope over-range detection is deliberately switched off by
+ * feeding it a range of 0. Its recovery path is far more expensive than the
+ * condition it guards against, and the measurement below is why.
+ *
+ * When any axis passes 0.98 * gyroscopeRange, Fusion calls SoftRestart(), which
+ * sets startup = true. That does two things for the next 3 seconds (the
+ * STARTUP_PERIOD ramp, FusionAhrs.c:20-25):
+ *   - the filter gain jumps from the tuned 0.2 to INITIAL_STARTUP_GAIN = 10.0,
+ *     a factor of 50;
+ *   - HalfInclinationFeedback() stops consulting accelerationRejection at all
+ *     (FusionAhrs.c:243), so the accelerometer is believed unconditionally.
+ *
+ * Hand shaking saturates this sensor's +/-500 dps range routinely, so the
+ * trigger fires exactly when the accelerometer is least trustworthy. Measured
+ * on the host, one 550 dps sample followed by an accelerometer that claims a
+ * 30 degree roll error (rejection threshold 10 degrees):
+ *
+ *     gyroscopeRange = 500 (detection on)  -> roll reaches the full +30.000
+ *     gyroscopeRange = 0   (detection off) -> roll stays at +0.000
+ *
+ * The sample is not corrupted, it is a real over-range reading, so the
+ * plausibility gate below does not catch it either - the gyroscope genuinely
+ * read 550 dps, it just could not read more. The lost rotation during
+ * saturation is unavoidable at this range; the 3 second loss of acceleration
+ * rejection afterwards is not, and it is the part that does the damage.
+ *
+ * The cost of switching it off: after a saturation event the filter keeps
+ * integrating rather than restarting. Since the gate only rejects readings
+ * above IMU_GYR_MAX_DPS, a saturated (clipped) sample still gets integrated,
+ * which under-counts that rotation either way.
+ *
+ * A future improvement would be to move the gyroscope to its +/-1000 dps range
+ * during high-dynamics phases, which raises the clipping point instead of
+ * papering over it - at the cost of halving the LSB resolution, so it needs its
+ * own dynamic test before being adopted.
+ */
+#define IMU_ACC_REJECTION_DEG 10.0f
+#define IMU_ACC_REJECTION_TIMEOUT_S 5.0f
+
+/*
+ * Runtime gyroscope bias tracking: only update the estimate while the measured
+ * rate stays under the threshold, and only once it has done so continuously for
+ * the given period.
+ */
+#define IMU_BIAS_STATIONARY_DPS 2.0f
+#define IMU_BIAS_STATIONARY_S 5.0f
+
+/*
+ * Plausibility gate in front of the AHRS.
+ *
+ * One corrupted sample is enough to wreck the attitude: yaw has no absolute
+ * reference, so a single bad step is integrated and never corrected. Testing
+ * captured exactly that - the accelerometer read jumped for one 200 ms trace
+ * interval (implying 5500 deg/s, far beyond the configured +/-500 dps range)
+ * and yaw took an 18 degree step it never recovered from.
+ *
+ * The counters and the logged values matter as much as the guard does: without
+ * them a glitch is indistinguishable from real motion.
+ *
+ * Thresholds are set at "physically impossible", not at "unusual". The first
+ * version used a +/-2 g window, which threw away a quarter of the samples
+ * during the shake phase - hand shaking reaches 2-3 g and passes through
+ * near-free-fall, so those readings were real and the filter was being starved
+ * exactly when it was most needed.
+ *
+ * The accelerometer range is +/-4 g per axis, so all three axes saturated is
+ * 6.9 g; the gyroscope cannot read past its +/-500 dps range at all. Only the
+ * gyroscope check is a genuine impossibility test.
+ */
+#define IMU_ACC_MIN_G 0.1f
+#define IMU_ACC_MAX_G 7.0f
+#define IMU_GYR_MAX_DPS (IMU_GYRO_RANGE_DPS * 1.02f)
+#define IMU_BAD_SAMPLE_LOG_PERIOD_US 1000000
+
+/*
+ * Bring-up retry. The BMI270 occasionally does not answer I2C on the first
+ * attempt after a power-on reset; see the comment at the call site.
+ */
+#define IMU_INIT_ATTEMPTS 3
+#define IMU_INIT_RETRY_MS 100
 
 /*
  * Sampling is paced by the BMI270 data-ready signal rather than by a timer:
@@ -63,6 +174,11 @@ static TaskHandle_t s_drdy_waiter;
  * aligned load/store is atomic on this core, so no lock is needed. */
 static volatile uint32_t s_drdy_count;
 
+/* Samples thrown away by the plausibility gate, and the last time we said so.
+ * Both only touched by the task calling imu_read_attitude(). */
+static uint32_t s_discarded_samples;
+static int64_t s_last_bad_log_us;
+
 /*
  * Latest attitude, written by the IMU task and read by the NimBLE host task
  * through the GATT read callback. The struct copy is not atomic, so it sits
@@ -70,13 +186,30 @@ static volatile uint32_t s_drdy_count;
  */
 static portMUX_TYPE s_att_lock = portMUX_INITIALIZER_UNLOCKED;
 static imu_attitude_t s_attitude;
+static imu_sample_t s_sample;
 static bool s_attitude_valid;
 
-/* Yaw integration state, only ever touched by the task calling
- * imu_read_attitude(). */
-static float s_yaw;
+/*
+ * Attitude estimation state, only ever touched by the task calling
+ * imu_read_attitude().
+ *
+ * Two bias mechanisms work together, and they compose additively:
+ *   - s_gyr_z_bias comes from the short boot calibration, so the attitude is
+ *     usable within a fraction of a second of power-on;
+ *   - s_bias (FusionBias) tracks the residual on all three axes while the board
+ *     sits still - which covers what a one-shot calibration cannot, namely
+ *     thermal drift hours into a session.
+ *
+ * The second one is not optional here. The boot calibration measures a 0.32 s
+ * window and leaves roughly 0.2 dps behind; yaw integrates that, which is
+ * 12 degrees per minute. A 2026-09-23 comparison against a Mahony filter that
+ * had no equivalent estimator measured exactly that drift, and is why this one
+ * stays - see docs/imu.md sections 4.3 and 4.9.
+ */
 static float s_gyr_z_bias;
 static int64_t s_last_us;
+static FusionAhrs s_ahrs;
+static FusionBias s_bias;
 
 /* Private functions */
 /*
@@ -188,13 +321,29 @@ esp_err_t imu_init(void) {
         return ESP_FAIL;
     }
 
-    /* bmi270_sensor_create() uploads the 8 KB Bosch configuration firmware,
-     * which the BMI270 needs before it produces any sample at all. */
-    esp_err_t ret = bmi270_sensor_create(s_i2c_bus, &s_handle,
-                                         bmi270_toy_config_file, 0);
+    /*
+     * bmi270_sensor_create() uploads the 8 KB Bosch configuration firmware,
+     * which the BMI270 needs before it produces any sample at all.
+     *
+     * It has been observed to fail with ESP_ERR_INVALID_STATE on roughly one
+     * power-on boot in four - the part does not always answer I2C yet by the
+     * time this runs. Retrying is cheap insurance: without it the board comes
+     * up with no IMU at all and stays that way until the next reset.
+     */
+    esp_err_t ret = ESP_FAIL;
+    for (int attempt = 0; attempt < IMU_INIT_ATTEMPTS; attempt++) {
+        ret = bmi270_sensor_create(s_i2c_bus, &s_handle,
+                                   bmi270_toy_config_file, 0);
+        if (ret == ESP_OK && s_handle != NULL) {
+            break;
+        }
+        ESP_LOGW(TAG, "imu: bmi270_sensor_create attempt %d/%d failed: %s",
+                 attempt + 1, IMU_INIT_ATTEMPTS, esp_err_to_name(ret));
+        vTaskDelay(pdMS_TO_TICKS(IMU_INIT_RETRY_MS));
+    }
     if (ret != ESP_OK || s_handle == NULL) {
-        ESP_LOGE(TAG, "imu: bmi270_sensor_create failed: %s",
-                 esp_err_to_name(ret));
+        ESP_LOGE(TAG, "imu: bmi270_sensor_create failed after %d attempts: %s",
+                 IMU_INIT_ATTEMPTS, esp_err_to_name(ret));
         return (ret == ESP_OK) ? ESP_FAIL : ret;
     }
 
@@ -208,14 +357,45 @@ esp_err_t imu_init(void) {
     vTaskDelay(pdMS_TO_TICKS(100));
     imu_calibrate_gyro_bias();
 
-    /* Yaw starts at zero; the first imu_read_attitude() sets the time base and
-     * therefore contributes no step. */
-    s_yaw = 0.0f;
+    /*
+     * Fusion AHRS. Roll and pitch now come out of the filter instead of
+     * straight from the accelerometer, so they stay correct while the board is
+     * accelerating; yaw is still a relative angle (no magnetometer to observe
+     * heading with) but is integrated from a continuously bias-corrected rate.
+     *
+     * The state is a quaternion throughout - Fusion integrates and normalises
+     * the quaternion (FusionAhrs.c:167-169) and the Euler conversion happens
+     * once, here, on the way out.
+     */
+    FusionAhrsInitialise(&s_ahrs);
+
+    FusionAhrsSettings ahrs_settings = fusionAhrsDefaultSettings;
+    ahrs_settings.sampleRate = IMU_ODR_HZ;
+    ahrs_settings.convention = FusionConventionNwu;
+    ahrs_settings.gain = IMU_AHRS_GAIN;
+    /* Zero disables over-range detection; see the block comment at
+     * IMU_GYRO_RANGE_DPS for why that is the deliberate choice here. */
+    ahrs_settings.gyroscopeRange = 0.0f;
+    ahrs_settings.accelerationRejection = IMU_ACC_REJECTION_DEG;
+    ahrs_settings.rejectionTimeout = IMU_ACC_REJECTION_TIMEOUT_S;
+    FusionAhrsSetSettings(&s_ahrs, &ahrs_settings);
+
+    FusionBiasInitialise(&s_bias);
+
+    FusionBiasSettings bias_settings = fusionBiasDefaultSettings;
+    bias_settings.sampleRate = IMU_ODR_HZ;
+    bias_settings.stationaryThreshold = IMU_BIAS_STATIONARY_DPS;
+    bias_settings.stationaryPeriod = IMU_BIAS_STATIONARY_S;
+    FusionBiasSetSettings(&s_bias, &bias_settings);
+
+    /* The first imu_read_attitude() only establishes the time base and so
+     * contributes no step to the filter. */
     s_last_us = 0;
 
-    ESP_LOGI(TAG, "imu: BMI270 ready (SCL=%d SDA=%d, %d Hz)",
+    ESP_LOGI(TAG,
+             "imu: BMI270 ready (SCL=%d SDA=%d, %d Hz), Fusion AHRS gain=%.2f",
              CONFIG_IMU_I2C_SCL_GPIO, CONFIG_IMU_I2C_SDA_GPIO,
-             CONFIG_IMU_I2C_FREQ_HZ);
+             CONFIG_IMU_I2C_FREQ_HZ, (double)IMU_AHRS_GAIN);
     return ESP_OK;
 }
 
@@ -321,38 +501,85 @@ esp_err_t imu_read_attitude(imu_attitude_t *out) {
         return ret;
     }
 
-    /* Roll and pitch from the gravity vector - formulas taken verbatim from
-     * ESP-Spot Lite test_imu.c:test_imu_test_attitude(). */
-    imu_attitude_t attitude;
-    attitude.roll = atan2f(sample.acc[1], sample.acc[2]) * RAD_TO_DEG;
-    attitude.pitch =
-        atan2f(-sample.acc[0],
-               sqrtf(sample.acc[1] * sample.acc[1] +
-                     sample.acc[2] * sample.acc[2])) *
-        RAD_TO_DEG;
-
-    /* Yaw: integrate the bias-corrected gyroscope Z rate. */
     int64_t now = esp_timer_get_time();
+    float dt = 0.0f;
     if (s_last_us != 0) {
-        float dt = (float)(now - s_last_us) / 1000000.0f;
-        /* Skip a bogus step rather than letting it inject a jump into the
-         * integral - dt is 0 on the very first call, and a long stall (a
-         * debugger halt, a blocked task) would otherwise add a huge slice. */
-        if (dt > 0.0f && dt < 0.5f) {
-            s_yaw += (sample.gyr[2] - s_gyr_z_bias) * dt;
-            while (s_yaw > 180.0f) {
-                s_yaw -= 360.0f;
-            }
-            while (s_yaw < -180.0f) {
-                s_yaw += 360.0f;
-            }
-        }
+        dt = (float)(now - s_last_us) / 1000000.0f;
     }
     s_last_us = now;
-    attitude.yaw = s_yaw;
+
+    /*
+     * Skip an implausible step rather than feeding it to the filter: dt is zero
+     * on the very first call, and a long stall (debugger halt, blocked task)
+     * would otherwise be integrated as one enormous rotation.
+     */
+    if (dt > 0.0f && dt < 0.5f) {
+        /*
+         * Plausibility gate. The accelerometer should read about 1 g and the
+         * gyroscope should stay inside its configured range; anything else is a
+         * corrupted reading rather than motion, and letting it through leaves a
+         * permanent step in yaw.
+         */
+        const float acc_magnitude =
+            sqrtf(sample.acc[0] * sample.acc[0] +
+                  sample.acc[1] * sample.acc[1] +
+                  sample.acc[2] * sample.acc[2]);
+        const bool acc_ok = (acc_magnitude >= IMU_ACC_MIN_G) &&
+                            (acc_magnitude <= IMU_ACC_MAX_G);
+        const bool gyr_ok = (fabsf(sample.gyr[0]) <= IMU_GYR_MAX_DPS) &&
+                            (fabsf(sample.gyr[1]) <= IMU_GYR_MAX_DPS) &&
+                            (fabsf(sample.gyr[2]) <= IMU_GYR_MAX_DPS);
+
+        if (!acc_ok || !gyr_ok) {
+            s_discarded_samples++;
+            /* Rate limited so a burst cannot bury the console, but the values
+             * stay visible: without them the cause is a guess, and a glitch
+             * looks exactly like real motion. */
+            if (now - s_last_bad_log_us > IMU_BAD_SAMPLE_LOG_PERIOD_US) {
+                s_last_bad_log_us = now;
+                ESP_LOGW(TAG,
+                         "imu: discarded implausible sample "
+                         "(acc %.2f g, gyr %+.1f %+.1f %+.1f dps, %u total)",
+                         (double)acc_magnitude, (double)sample.gyr[0],
+                         (double)sample.gyr[1], (double)sample.gyr[2],
+                         (unsigned)s_discarded_samples);
+            }
+            /* Deliberately falls through without updating the filter: the last
+             * good attitude is republished, so the stream does not stall. */
+        } else {
+            /* Subtract the boot calibration first; FusionBias then estimates
+             * what is left over, so the two corrections add up instead of
+             * fighting. */
+            FusionVector gyroscope = {
+                .array = {sample.gyr[0], sample.gyr[1],
+                          sample.gyr[2] - s_gyr_z_bias}};
+            const FusionVector accelerometer = {
+                .array = {sample.acc[0], sample.acc[1], sample.acc[2]}};
+
+            gyroscope = FusionBiasUpdate(&s_bias, gyroscope);
+
+            /* Feed the measured interval rather than the nominal one:
+             * data-ready spacing jitters, and the filter integrates whatever it
+             * is given. */
+            FusionAhrsSetSamplePeriod(&s_ahrs, dt);
+            FusionAhrsUpdateNoMagnetometer(&s_ahrs, gyroscope, accelerometer);
+        }
+    }
+
+    const FusionEuler euler =
+        FusionQuaternionToEuler(FusionAhrsGetQuaternion(&s_ahrs));
+
+    const imu_attitude_t attitude = {
+        .roll = euler.angle.roll,
+        .pitch = euler.angle.pitch,
+        .yaw = euler.angle.yaw,
+    };
 
     portENTER_CRITICAL(&s_att_lock);
     s_attitude = attitude;
+    /* Keep the sample that produced it: the dynamic test reads both together
+     * to compare the filtered angles against the raw-accelerometer ones. */
+    s_sample = sample;
     s_attitude_valid = true;
     portEXIT_CRITICAL(&s_att_lock);
 
@@ -375,4 +602,21 @@ esp_err_t imu_get_latest_attitude(imu_attitude_t *out) {
     return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
+esp_err_t imu_get_latest_sample(imu_sample_t *out) {
+    if (out == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    portENTER_CRITICAL(&s_att_lock);
+    bool valid = s_attitude_valid;
+    if (valid) {
+        *out = s_sample;
+    }
+    portEXIT_CRITICAL(&s_att_lock);
+
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
 uint32_t imu_get_data_ready_count(void) { return s_drdy_count; }
+
+uint32_t imu_get_discarded_sample_count(void) { return s_discarded_samples; }

@@ -22,7 +22,7 @@ ESP32-S3 上的 BLE GATT 服务端：读取板载 **BMI270 六轴 IMU**，解算
 |---|---|---|
 | [docs/host-integration.md](docs/host-integration.md) | **上位机对接**：报文格式（唯一权威定义）、连接流程、必读注意事项、解码示例、排错表 | **写上位机 / 对接客户端时先看这份** |
 | [docs/host-app.md](docs/host-app.md) | **Windows 上位机工程**（`host/`，.NET 8 WPF）：选型依据、已完成/未完成、搭建复现、验证清单、单文件发布 | 改 `host/` 下代码或要出 exe 时 |
-| [docs/imu.md](docs/imu.md) | BMI270 驱动、姿态解算、中断采样、零偏标定 | 改 IMU 引脚 / 量程 / 算法 / 采样方式时 |
+| [docs/imu.md](docs/imu.md) | BMI270 驱动、Fusion 姿态滤波、**陀螺仪过载坑**、中断采样、零偏标定、动态精度测试、万向节锁 | 改 IMU 引脚 / 量程 / 算法 / 采样方式时 |
 | [docs/ble-interface.md](docs/ble-interface.md) | **服务端内部视角**：服务定义、访问回调、订阅回调、代码位置 | 改 GATT 服务端代码时 |
 | [docs/build-and-flash.md](docs/build-and-flash.md) | 构建、烧录、分区表、踩过的坑 | 构建或烧录出问题时**先看这里** |
 | [docs/docs-convention.md](docs/docs-convention.md) | **文档分层约定**：L0/L1/L2 各放什么、禁止复制清单、新增/修改组件的同步义务、什么时候拆文档 | 动 `CLAUDE.md` 或 `docs/*.md` 结构之前 |
@@ -66,10 +66,13 @@ main/
 ├── include/
 │   ├── common.h              公共头（TAG、NimBLE/FreeRTOS/ESP 头汇总）
 │   ├── imu.h                 IMU 对外接口：初始化、采样、姿态、中断
+│   ├── imu_dyntest.h         引导式动态精度测试接口
 │   ├── gatt_svc.h            GATT 对外接口（含 send_imu_notification）
 │   ├── gap.h / heart_rate.h / led.h
+├── fusion/                   vendored Fusion AHRS（逐字节，见 fusion/README.md）
 └── src/
-    ├── imu.c                 BMI270 驱动 + 姿态解算（核心，见 docs/imu.md）
+    ├── imu.c                 BMI270 驱动 + 姿态滤波（核心，见 docs/imu.md）
+    ├── imu_dyntest.c         8 个引导动作 + 滤波/不滤波对照统计
     ├── gatt_svc.c            GATT 服务定义与访问回调
     ├── gap.c                 广播与连接管理
     ├── heart_rate_mock.c     心跳服务（**mock 数据**，非真实传感器）

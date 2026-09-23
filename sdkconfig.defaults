@@ -27,3 +27,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # quantises every interval up to the next edge (50 ms becomes 50/55 ms and the
 # average rate comes out below the nominal one).
 CONFIG_IMU_NOTIFY_PERIOD_MS=10
+
+# Guided dynamic-accuracy test over the serial console. Turned on only while
+# validating the AHRS; it delays boot by about a minute and floods the console.
+CONFIG_IMU_DYNAMIC_TEST=y

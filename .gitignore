@@ -78,6 +78,8 @@ host/tests/*/obj/
 host/.nuget/
 host/artifacts/
 host/publish/
+# Visual Studio local state: solution indexes, per-user settings
+host/.vs/
 
 # Windows specific
 Thumbs.db

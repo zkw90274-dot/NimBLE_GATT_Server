@@ -9,6 +9,7 @@
 #include "gatt_svc.h"
 #include "heart_rate.h"
 #include "imu.h"
+#include "imu_dyntest.h"
 #include "led.h"
 #include "esp_timer.h"
 
@@ -68,7 +69,11 @@ static void heart_rate_task(void *param) {
     while (1) {
         /* Update heart rate value every 1 second */
         update_heart_rate();
-        ESP_LOGI(TAG, "heart rate updated to %d", get_heart_rate());
+        /* Stay quiet while the guided test runs, for the same reason as the IMU
+         * log: the operator has to be able to read the prompts. */
+        if (!imu_dyntest_is_running()) {
+            ESP_LOGI(TAG, "heart rate updated to %d", get_heart_rate());
+        }
 
         /* Send heart rate indication if enabled */
         send_heart_rate_indication();
@@ -124,9 +129,15 @@ static void imu_task(void *param) {
 
         if (++since_log >= IMU_LOG_DIVIDER) {
             since_log = 0;
-            ESP_LOGI(TAG, "imu: roll %+7.2f  pitch %+7.2f  yaw %+7.2f  (deg)",
-                     (double)attitude.roll, (double)attitude.pitch,
-                     (double)attitude.yaw);
+            /* Stay quiet while the guided test runs: its prompts and countdown
+             * are what the operator has to read, and it prints its own trace.
+             * BLE notifications are unaffected. */
+            if (!imu_dyntest_is_running()) {
+                ESP_LOGI(TAG,
+                         "imu: roll %+7.2f  pitch %+7.2f  yaw %+7.2f  (deg)",
+                         (double)attitude.roll, (double)attitude.pitch,
+                         (double)attitude.yaw);
+            }
         }
         send_imu_notification();
     }
@@ -134,6 +145,18 @@ static void imu_task(void *param) {
     /* Clean up at exit */
     vTaskDelete(NULL);
 }
+
+#if CONFIG_IMU_DYNAMIC_TEST
+/*
+ * Guided dynamic-accuracy test (CONFIG_IMU_DYNAMIC_TEST).
+ *
+ * Runs on its own task and only reads the attitude and sample the IMU task
+ * already publishes, so the streaming path - and therefore the thing being
+ * measured - is left alone. Lower priority than the IMU task for the same
+ * reason.
+ */
+static void imu_dyntest_task(void *param) { imu_dyntest_run(); }
+#endif
 
 void app_main(void) {
     /* Local variables */
@@ -216,5 +239,12 @@ void app_main(void) {
                      (unsigned)imu_get_data_ready_count());
         }
     }
+
+#if CONFIG_IMU_DYNAMIC_TEST
+    if (imu_ready) {
+        xTaskCreate(imu_dyntest_task, "imu_dyntest", 4 * 1024, NULL, 4, NULL);
+    }
+#endif
+
     return;
 }

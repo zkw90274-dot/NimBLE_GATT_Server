@@ -87,4 +87,19 @@ menu "IMU (BMI270) configuration"
             interrupt (200 Hz) - this value only paces the radio, and doubles
             as the sampling loop's fallback timeout.
 
+    config IMU_DYNAMIC_TEST
+        bool "Run the guided dynamic-accuracy test at boot"
+        default n
+        help
+            Prints a step-by-step manoeuvre (tilt, yaw, shake, settle) over the
+            serial console, samples while the operator performs each step, then
+            prints per-phase statistics and a summary.
+
+            The summary compares the fused attitude against the plain
+            accelerometer-only formulas computed from the very same samples,
+            which is what shows acceleration rejection actually working.
+
+            Off by default: it blocks a task for about a minute and is only
+            useful with a serial console in front of it. See imu_dyntest.c.
+
 endmenu

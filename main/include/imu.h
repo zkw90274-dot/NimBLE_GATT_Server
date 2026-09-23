@@ -28,20 +28,26 @@ typedef struct {
 /*
  * Attitude in degrees.
  *
- * roll and pitch are absolute. They are derived from the gravity vector the
- * accelerometer measures, using the same formulas as the ESP-Spot Lite
- * self-test (test_imu.c, test_imu_test_attitude):
+ * All three angles come out of a quaternion attitude filter - the filter's
+ * internal state is a quaternion and the Euler conversion happens once, at the
+ * last step, in imu_read_attitude(). See docs/imu.md section 4.
  *
- *     roll  = atan2( acc_y,  acc_z)
- *     pitch = atan2(-acc_x, sqrt(acc_y^2 + acc_z^2))
+ * roll and pitch are absolute. Left alone the accelerometer fixes both against
+ * gravity, so they stay correct while the board is being moved, not just while
+ * it is still. Note that the Euler representation itself degenerates as pitch
+ * approaches +/-90 degrees; anything that needs the attitude there wants the
+ * quaternion, which is not in the BLE payload.
  *
  * yaw is NOT absolute. The BMI270 has no magnetometer, so there is no heading
- * reference to observe; a 6-axis part simply cannot measure heading. What is
+ * reference to observe; a 6-axis part simply cannot measure heading. Nothing in
+ * the filter corrects yaw - no accelerometer reading can see it, because a
+ * rotation about gravity leaves the accelerometer output unchanged. What is
  * reported here is the gyroscope Z rate integrated over time, zeroed once at
- * boot after a still-period bias calibration. It is a relative turn angle:
- * usable to see "how far has this been rotated since power-on", correct over
- * seconds to minutes, but it drifts and is not a compass heading. Do not feed
- * it into anything that needs an absolute bearing.
+ * boot after a still-period bias calibration and then tracked continuously by
+ * FusionBias. It is a relative turn angle: usable to see "how far has this been
+ * rotated since power-on", correct over seconds to minutes, but it drifts and
+ * is not a compass heading. Do not feed it into anything that needs an absolute
+ * bearing.
  */
 typedef struct {
     float roll;   /* deg, -180 .. +180 */
@@ -108,6 +114,18 @@ esp_err_t imu_read_attitude(imu_attitude_t *out);
 esp_err_t imu_get_latest_attitude(imu_attitude_t *out);
 
 /*
+ * @brief Copy the raw sample that produced the latest attitude.
+ *
+ * Exists so a caller can compare the fused attitude against what the plain
+ * accelerometer formulas would have said about the *same* reading - which is
+ * how the dynamic-accuracy test demonstrates acceleration rejection.
+ *
+ * @param out Destination for the sample. Must not be NULL.
+ * @return ESP_OK, or ESP_ERR_INVALID_STATE if no sample has been read yet.
+ */
+esp_err_t imu_get_latest_sample(imu_sample_t *out);
+
+/*
  * @brief Number of data-ready edges seen since boot.
  *
  * This exists because a dead INT1 line is invisible from the outside: the IMU
@@ -119,5 +137,17 @@ esp_err_t imu_get_latest_attitude(imu_attitude_t *out);
  * @return Edge count.
  */
 uint32_t imu_get_data_ready_count(void);
+
+/*
+ * @brief Number of samples rejected by the plausibility gate since boot.
+ *
+ * A non-zero, growing count means the sensor or the I2C link is producing
+ * corrupted readings. Those samples never reach the filter, so the attitude
+ * stays clean - but the cause is worth chasing, and this counter is the only
+ * evidence that it is happening at all.
+ *
+ * @return Rejected sample count.
+ */
+uint32_t imu_get_discarded_sample_count(void);
 
 #endif // IMU_H
