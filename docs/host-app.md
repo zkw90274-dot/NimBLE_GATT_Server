@@ -20,7 +20,7 @@
 | UI | 数值 + 实时曲线 + 3D 姿态 |
 | 交付 | **单文件 exe**（自包含，对方无需装 .NET） |
 | 仿真 | **要**（无硬件可演示） |
-| 数据率 | 当前固件 20 Hz，但**上位机必须抗住 ≥100 fps**（未来固件会提速），见 §2.5 与 §5.3.2 |
+| 数据率 | **固件已提速**（2026-09-23，速率随连接间隔变化，实测见 [host-integration.md](host-integration.md) §8）；上位机仍**必须抗住 ≥100 fps**，见 §2.5 与 §5.3.2 |
 | 暂不做 | CSV 导出、LED 控制、多连接、断线自动重连 |
 
 ---
@@ -151,7 +151,7 @@ MainWindow 渲染 tick（DispatcherTimer，请求 8 ms → 实测 ~64 fps）
 | 项 | 问题 | 优先级 |
 |---|---|---|
 | 真机 BLE | `WindowsBleImuSource` 未对 `dc:b4:d9:21:6a:fc` 联调（扫描 / CCCD / 速率 / 轴向） | P1 |
-| 高速率真机链路 | 固件当前 20 Hz；要到 ≥100 fps 还需改 `CONFIG_IMU_NOTIFY_PERIOD_MS`、NimBLE 连接参数、DLE、Win11 `ThroughputOptimized`（需 TFM ≥ 10.0.22000.0）——**尚未动，等硬件在线再谈** | P1 |
+| 高速率真机链路 | **固件侧已完成**（2026-09-23）：`gap.c` 改为主动协商连接参数 + `latency=0`，实测速率提升约 **3.9 倍**且零丢包，见 [host-integration.md](host-integration.md) §8。**上位机侧**若要再往上（DLE、Win11 `ThroughputOptimized`，需 TFM ≥ 10.0.22000.0）仍未动 | P1 |
 | `scripts/publish-portable.ps1` | **尚未创建**，单文件 exe 未产出 | P1 |
 | 干净虚拟机 | 未装 .NET 的系统双击验证 | P2 |
 
@@ -356,7 +356,7 @@ Windows 栈），仿真压测只证明**上位机软件不是瓶颈**。见 §3.
 2. 列表应出现 `NimBLE_GATT`（**不要**依赖 MAC）
 3. 「连接所选设备」→ 状态变为「已连接…等待通知」
 4. 检查：
-   - [ ] 有持续数据，「到达速率」18–20 Hz，「丢帧」恒为 0
+   - [ ] 有持续数据，「到达速率」为几十 Hz 量级（实测约 70 Hz，随连接间隔变化，见 [host-integration.md](host-integration.md) §8），「丢帧」恒为 0
    - [ ] 静止时 roll/pitch 稳定（固件实测约 -1° / -2.5° 量级，允许板差）
    - [ ] **yaw 标注「相对上电」**；静止漂移应 ~0.1°/min 量级
    - [ ] 扭动板子，3D 与数值一致、无严重轴反（若轴反：只改 `Attitude3DView.SetAttitude` 映射，**不要改协议**）
@@ -442,7 +442,7 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1
 - [x] `dotnet test` 全绿（24 passed：协议 14 + 环形缓冲 10，含真机 hex 向量）  
 - [x] 仿真模式 UI 三件套（数值/曲线/3D）流畅（见 §5.3.1）  
 - [x] ≥100 fps 抗压：仿真 100 Hz 与 500 Hz 到达速率达标、丢帧恒为 0、渲染 ~60 fps（见 §5.3.2）  
-- [ ] 真机 BLE 流 18–20 Hz，断开可恢复  
+- [ ] 真机 BLE 流达到连接间隔允许的速率（实测约 70 Hz），断开可恢复  
 - [ ] `publish/NimBleImuHost.exe` 单文件在干净系统双击可运行  
 - [x] 本文与 `host-integration.md` 无协议矛盾  
 
@@ -452,7 +452,7 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1
 
 已完成（2026-09-23）：1 修 `MainWindow.xaml.cs` + ScottPlot API、2 csproj TFM + `ScottPlot.WPF 5.1.59`、3 编译门禁、4 协议单测、5 仿真 UI 验收、6 采集/渲染解耦流水线（SPSC 环 + 单调时间戳 + `SignalXY` 原地更新）+ 100/500 Hz 压测。
 
-1. **真机 BLE 验收**（§5.4）—— 板子 MAC `dc:b4:d9:21:6a:fc`，**需要先上电**且无其它客户端占用；重点核对扫描到 `NimBLE_GATT`、CCCD 订阅后 18–20 Hz、轴向与 3D 是否一致，以及界面上「丢帧」是否恒为 0  
+1. **真机 BLE 验收**（§5.4）—— 板子 MAC `dc:b4:d9:21:6a:fc`，**需要先上电**且无其它客户端占用；重点核对扫描到 `NimBLE_GATT`、CCCD 订阅后速率达标（实测约 70 Hz，见 [host-integration.md](host-integration.md) §8）、轴向与 3D 是否一致，以及界面上「丢帧」是否恒为 0  
 2. 写 `scripts/publish-portable.ps1` 并产出单文件（§5.5）  
 3. 干净虚拟机双击验证  
 4. 真机提速（可选，用户尚未授权动固件）：固件 50 → 100 fps 需要连接参数 + DLE 一起改，见 §7 最后一行  

@@ -31,9 +31,10 @@
 
 | 事实 | 权威出处 | 其它文档怎么引用 |
 |---|---|---|
-| 12 字节报文布局、UUID、设备名、**线上观测到的**通知速率（18–20 Hz、50/55 ms 抖动） | `docs/host-integration.md` §2 | 只写「见 host-integration §2」，**不要**再抄一遍字段表 |
+| 12 字节报文布局、UUID、设备名、**线上观测到的**通知速率（随连接间隔变化，见该文档 §4.2/§8） | `docs/host-integration.md` §2 | 只写「见 host-integration §2」，**不要**再抄一遍字段表 |
 | GATT 服务端代码结构、订阅回调 | `docs/ble-interface.md` | 同上 |
-| 固件侧限速常量 `CONFIG_IMU_NOTIFY_PERIOD_MS` 与采样/降级逻辑 | `docs/imu.md` | 引用时写「名义 20 Hz」，具体数值以 imu.md 为准 |
+| 固件侧限速常量 `CONFIG_IMU_NOTIFY_PERIOD_MS` 与采样/降级逻辑 | `docs/imu.md` §5.1 | 引用时写「见 imu.md §5.1」，具体数值以 imu.md 为准 |
+| **BLE 连接参数请求**（`gap.c` 的 itvl/latency）以及它如何成为推送速率的硬上限 | `docs/ble-interface.md` §4 | 写「见 ble-interface §4」；**不要**在别处复述那三个参数值 |
 | IMU 驱动、姿态解算、零偏漂移 | `docs/imu.md` | 引用结论（如「yaw 相对开机、会漂」）时带链接 |
 | 上位机选型、流水线、UI 验收、发布 | `docs/host-app.md` | 同上 |
 | 构建/烧录/分区表的坑 | `docs/build-and-flash.md` | L0 只留一句话 + 链接 |

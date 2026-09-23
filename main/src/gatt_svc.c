@@ -302,7 +302,12 @@ void send_imu_notification(void) {
 
     int rc = ble_gatts_notify(imu_chr_conn_handle, imu_chr_val_handle);
     if (rc != 0) {
-        ESP_LOGW(TAG, "imu notification failed; rc=%d", rc);
+        /* DEBUG level on purpose. The usual failure here is BLE_HS_ENOMEM -
+         * the controller has no free buffer because the connection interval
+         * cannot drain the stream fast enough. At a high notification rate
+         * that repeats on every call, so a per-call WARN would bury the
+         * console and distort the very loop it is reporting on. */
+        ESP_LOGD(TAG, "imu notification dropped; rc=%d", rc);
     }
 }
 

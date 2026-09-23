@@ -99,17 +99,33 @@ GPIO5 上升沿 ──► ISR（只做一件事：vTaskNotifyGiveFromISR）
    ▼
 IMU 任务 ──► imu_read_attitude()  ← 每个 data-ready 采样一次，yaw 积分跑在 200 Hz
    │
-   ├──► ESP_LOGI（与上报同频，所以串口看到的和发出去的是同一个值）
-   └──► send_imu_notification()   ← 限速到每 CONFIG_IMU_NOTIFY_PERIOD_MS（50 ms / 20 Hz）
+   ├──► ESP_LOGI（每 IMU_LOG_DIVIDER 包一条；打出来的仍是真正发出去的包）
+   └──► send_imu_notification()   ← 交给协议栈，实际速率由连接间隔决定
 ```
 
-**为什么采样和上报要解耦**：传感器出数 200 Hz，BLE 承载不了；但 yaw 是积分量，采样越快积分越紧。所以取样的节拍跟着传感器，radio 的节拍单独限速。
+**为什么采样和上报要解耦**：传感器出数 200 Hz，BLE 承载不了；但 yaw 是积分量，采样越快积分越紧。所以取样的节拍跟着传感器，radio 的节拍单独控制。
+
+### 5.1 上报速率由谁决定
+
+三层，越往下越硬：
+
+| 层 | 位置 | 当前值 | 作用 |
+|---|---|---|---|
+| 采样节拍 | `imu_configure()` 的 ODR | 200 Hz | 取数频率，决定 yaw 积分精度 |
+| 限速器 | `CONFIG_IMU_NOTIFY_PERIOD_MS` | 10 ms | **只是"最早何时可发"**，不等于实际速率 |
+| **连接间隔** | `gap.c` 的 `ble_gap_upd_params` | 请求 15–30 ms | **真正的上限** —— 通知只能在连接事件上发出 |
+
+⚠️ **只调 `CONFIG_IMU_NOTIFY_PERIOD_MS` 而不动连接参数是无效的。** 把限速设到 10 ms（目标 100 Hz）后，实际速率仍被连接间隔压住（实测值见 [host-integration.md](host-integration.md) §8）—— 因为链路跟不上时，协议栈会**反压** `ble_gatts_notify()`，而不是丢弃数据。
+
+**这意味着零丢包，代价是速率上不去时表现为"慢"而不是"空洞"**，对上位机是好事。
+
+连接间隔的最终值由**主机**裁定，设备只能请求；具体代码与 `latency` 为什么必须是 0，见 [ble-interface.md](ble-interface.md) §4。
 
 **中断配置**：`BMI2_DRDY_INT` 映射到 `BMI2_INT1`，电气属性为**推挽 / 高有效 / 非锁存**（非锁存 = 每个样本一个脉冲，而不是需要读状态寄存器去清的电平）。因此 GPIO 侧配的是 `GPIO_INTR_POSEDGE` —— **这两处必须一致，否则收不到中断**。
 
 **ISR 里不做任何事**：不碰 I2C、不打日志、不调任何可能阻塞的 API，只发一个任务通知。
 
-**降级设计**：任务用 `ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(CONFIG_IMU_NOTIFY_PERIOD_MS))` 等待，**带超时**。所以中断不可用（GPIO 配错、线路断、`imu_start_data_ready()` 失败）时，采样不会停死，只是掉到 50 ms 一次。
+**降级设计**：任务用 `ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(CONFIG_IMU_NOTIFY_PERIOD_MS))` 等待，**带超时**。所以中断不可用（GPIO 配错、线路断、`imu_start_data_ready()` 失败）时，采样不会停死，只是掉到 `CONFIG_IMU_NOTIFY_PERIOD_MS` 一次（当前 10 ms）。
 
 ## 6. 怎么验证它真的在工作
 

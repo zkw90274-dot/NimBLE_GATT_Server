@@ -13,3 +13,17 @@ CONFIG_BLINK_GPIO=8
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ---- IMU streaming rate ----
+# Paces the BLE notifications only. The sensor itself is sampled on every
+# data-ready interrupt (200 Hz) no matter what this says.
+#
+# The binding constraint is not this value but the connection interval
+# requested in main/src/gap.c - a notification can only leave the device on a
+# connection event. Ask for 15-30 ms there and this can go down to roughly the
+# same order before the link, not the limiter, becomes the limit.
+#
+# Keep it a multiple of the 5 ms data-ready grid, otherwise the limiter
+# quantises every interval up to the next edge (50 ms becomes 50/55 ms and the
+# average rate comes out below the nominal one).
+CONFIG_IMU_NOTIFY_PERIOD_MS=10

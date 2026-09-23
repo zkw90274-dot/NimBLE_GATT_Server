@@ -81,8 +81,18 @@ static void heart_rate_task(void *param) {
     vTaskDelete(NULL);
 }
 
+/*
+ * Logging is not free: one ESP_LOGI on a 115200 baud console blocks for
+ * roughly 5 ms, so printing every notification would consume half the loop at
+ * 100 Hz. Print one line in IMU_LOG_DIVIDER instead. What does get printed is
+ * still a notification that actually went out, so the console stays a truthful
+ * view of the stream.
+ */
+#define IMU_LOG_DIVIDER (10)
+
 static void imu_task(void *param) {
     int64_t last_notify_us = 0;
+    uint32_t since_log = 0;
 
     /* Task entry log */
     ESP_LOGI(TAG, "imu task has been started!");
@@ -101,8 +111,9 @@ static void imu_task(void *param) {
         }
 
         /* The sensor free-runs at 200 Hz. Sampling on every data-ready keeps
-         * the yaw integral tight, but BLE cannot carry 200 notifications a
-         * second, so the radio is paced separately from the sampling. */
+         * the yaw integral tight, but the radio is paced separately: the real
+         * ceiling is the BLE connection interval requested in gap.c, and this
+         * only decides when to hand a sample to the stack. */
         int64_t now = esp_timer_get_time();
         if (last_notify_us != 0 &&
             (now - last_notify_us) <
@@ -111,9 +122,12 @@ static void imu_task(void *param) {
         }
         last_notify_us = now;
 
-        ESP_LOGI(TAG, "imu: roll %+7.2f  pitch %+7.2f  yaw %+7.2f  (deg)",
-                 (double)attitude.roll, (double)attitude.pitch,
-                 (double)attitude.yaw);
+        if (++since_log >= IMU_LOG_DIVIDER) {
+            since_log = 0;
+            ESP_LOGI(TAG, "imu: roll %+7.2f  pitch %+7.2f  yaw %+7.2f  (deg)",
+                     (double)attitude.roll, (double)attitude.pitch,
+                     (double)attitude.yaw);
+        }
         send_imu_notification();
     }
 

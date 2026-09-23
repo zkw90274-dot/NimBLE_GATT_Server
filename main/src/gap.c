@@ -159,12 +159,28 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
             /* Print connection descriptor */
             print_conn_desc(&desc);
 
-            /* Try to update connection parameters */
-            struct ble_gap_upd_params params = {.itvl_min = desc.conn_itvl,
-                                                .itvl_max = desc.conn_itvl,
-                                                .latency = 3,
-                                                .supervision_timeout =
-                                                    desc.supervision_timeout};
+            /* Ask for a short connection interval instead of echoing back
+             * whatever the central proposed.
+             *
+             * A notification can only leave the device on a connection event,
+             * so the interval - not any number in this firmware - puts the hard
+             * ceiling on the sample rate. The original code copied the
+             * central's interval into both bounds and left it at that, which
+             * meant giving up the negotiation entirely.
+             *
+             * NimBLE counts the interval in 1.25 ms units: 12 -> 15 ms,
+             * 24 -> 30 ms. The central has the final say and may grant less.
+             *
+             * latency stays 0 on purpose. Latency lets a peripheral skip
+             * connection events to save power, stretching the effective
+             * interval to (1 + latency) x itvl - exactly the wrong trade for a
+             * device whose whole job is streaming. */
+            struct ble_gap_upd_params params = {
+                .itvl_min = 12,             /* 15 ms */
+                .itvl_max = 24,             /* 30 ms */
+                .latency = 0,
+                .supervision_timeout = 400, /* 4 s */
+            };
             rc = ble_gap_update_params(event->connect.conn_handle, &params);
             if (rc != 0) {
                 ESP_LOGE(

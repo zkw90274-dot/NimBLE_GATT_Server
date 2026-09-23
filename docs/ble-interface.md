@@ -30,7 +30,7 @@
 ### 订阅与通知
 
 1. 客户端写 CCCD 订阅该特征 → 服务端记录订阅状态并打日志 `imu notifications enabled`
-2. 服务端以 **20 Hz**（`CONFIG_IMU_NOTIFY_PERIOD_MS = 50`）推送通知
+2. 服务端推送通知 —— **实际速率由 BLE 连接间隔决定**（见 §4），不是固件里的常量。限速器与采样逻辑见 [imu.md](imu.md) §5.1，线上实测速率见 [host-integration.md](host-integration.md) §8
 3. **未订阅时不推送**，`send_imu_notification()` 直接返回，无副作用
 
 通知的取值来自**缓存**（IMU 任务最后一次解算的结果），不是回调里现场读传感器 —— 这样"串口日志里的值"和"发出去的值"是同一个数，排查时不会出现对不上的情况。
@@ -55,9 +55,32 @@
 
 写 1 字节：非 0 点亮 WS2812，0 熄灭。LED 引脚见 `CONFIG_BLINK_GPIO`。
 
-## 4. 连接参数
+## 4. 连接参数 ⭐ 推送速率的上限在这里，不在 IMU 代码里
 
-`main/src/gap.c` 负责广播与连接管理：广播间隔 500–510 ms；连接建立后会向对端发起连接参数更新请求（含 latency 3）。若客户端侧通知出现堆积，先看这里的 `conn_itvl` 与对端的协商结果。
+`main/src/gap.c` 负责广播与连接管理：广播间隔 500–510 ms。
+
+连接建立后设备会**主动请求**一组连接参数，而不是把主机提议的间隔原样回读（原实现在这里把主机的 60 ms 抄进上下界，等于放弃了协商）：
+
+```c
+struct ble_gap_upd_params params = {
+    .itvl_min = 12,             /* 15 ms —— NimBLE 以 1.25 ms 为单位 */
+    .itvl_max = 24,             /* 30 ms */
+    .latency = 0,
+    .supervision_timeout = 400, /* 4 s */
+};
+```
+
+| 参数 | 为什么是这个值 |
+|---|---|
+| `itvl_min` / `itvl_max` | 一个通知**只能在连接事件上发出**，所以连接间隔就是推送速率的硬上限。请求得越短，能推得越快 |
+| **`latency = 0`** | `latency` 允许从设备跳过连接事件来省电，会把**有效**间隔拉长到 `(1+latency) × itvl`。原代码是 3，配 60 ms 间隔时最坏 240 ms —— 对持续推流的设备正好相反，**必须为 0** |
+| `supervision_timeout = 400` | 4 s。规范要求它 ≥ `(1+latency) × itvl_max × 2`，latency=0 时轻易满足 |
+
+**最终值由主机裁定，设备只能请求。** 实测这台 Windows 在 15–30 ms 的请求区间内给了 22 ms，也见过它给 13.75 ms 或 60 ms。
+
+**排错入口**：串口搜 `conn_itvl=`，该数值单位是 **1.25 ms**。`BLE_GAP_EVENT_CONNECT` 与 `BLE_GAP_EVENT_CONN_UPDATE` 两个事件都会打印。
+
+> 想改推送速率，**先改这里**。只调 `CONFIG_IMU_NOTIFY_PERIOD_MS` 是无效的 —— 链路跟不上时协议栈会反压 `ble_gatts_notify()`，实测见 [host-integration.md](host-integration.md) §8。
 
 ## 5. 代码位置
 

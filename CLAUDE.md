@@ -1,6 +1,6 @@
 # NimBLE_GATT_Server
 
-ESP32-S3 上的 BLE GATT 服务端：读取板载 **BMI270 六轴 IMU**，解算姿态角，通过 GATT 特征以 20 Hz 通知客户端。
+ESP32-S3 上的 BLE GATT 服务端：读取板载 **BMI270 六轴 IMU**，解算姿态角，通过 GATT 特征推送给客户端。速率由 BLE **连接间隔**决定，不是固件里的固定值。
 
 当前状态：**已在真机验证**（2026-09-22，芯片 ESP32-S3 QFN56 v0.2，MAC `dc:b4:d9:21:6a:fc`）。
 
@@ -38,7 +38,7 @@ ESP32-S3 上的 BLE GATT 服务端：读取板载 **BMI270 六轴 IMU**，解算
 | 串口 | COM3 |
 | IMU I2C | SCL=GPIO1 / SDA=GPIO2 / 100 kHz / **内部上拉**（板无外部上拉） |
 | IMU 中断 | BMI270 INT1 → GPIO5（data-ready，非锁存，高有效） |
-| BLE 上报 | 20 Hz（`CONFIG_IMU_NOTIFY_PERIOD_MS=50`） |
+| BLE 上报 | 上限由**连接间隔**决定（`gap.c` 请求 15–30 ms、`latency=0`），不是固件限速常量；实测速率见 [host-integration.md](docs/host-integration.md) §8 |
 | app 分区 | 4 MB（`partitions.csv`），当前占用约 14% |
 
 ```cmd
