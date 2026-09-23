@@ -25,6 +25,9 @@ public sealed class WindowsBleImuSource : IBleImuSource
     private ImuSourceState _state = ImuSourceState.Idle;
     private string? _status = "空闲";
 
+    // 0 until the first notification of a connection has been decoded; see OnValueChanged.
+    private int _firstSampleSeen;
+
     public string DisplayName => "Windows BLE";
 
     public ImuSourceState State
@@ -46,7 +49,7 @@ public sealed class WindowsBleImuSource : IBleImuSource
     public event EventHandler<ImuSourceState>? StateChanged;
     public event EventHandler? DevicesChanged;
 
-    public Task ScanAsync(TimeSpan duration, CancellationToken cancellationToken = default)
+    public async Task ScanAsync(TimeSpan duration, CancellationToken cancellationToken = default)
     {
         StopWatcher();
 
@@ -59,35 +62,33 @@ public sealed class WindowsBleImuSource : IBleImuSource
         DevicesChanged?.Invoke(this, EventArgs.Empty);
         SetState(ImuSourceState.Scanning, $"正在扫描 {ProtocolConstants.DeviceName} …");
 
-        var watcher = new BluetoothLEAdvertisementWatcher
-        {
-            ScanningMode = BluetoothLEScanningMode.Active,
-        };
-        watcher.AdvertisementFilter.Advertisement.ServiceUuids.Add(Guid.Parse(ProtocolConstants.ServiceUuid));
-        watcher.Received += OnAdvertisementReceived;
-        _watcher = watcher;
-        watcher.Start();
+        // Deliberately no AdvertisementFilter on service UUIDs. The firmware's advertising
+        // packet carries flags + complete local name and nothing else (main/src/gap.c
+        // start_advertising), so a UUID filter drops every packet and the scan reports
+        // "no devices" even with the board in front of the antenna.
+        StartWatcher();
 
-        _ = Task.Run(async () =>
+        // The window is awaited on purpose. Callers read DiscoveredDevices as soon as this
+        // returns, so a fire-and-forget scan would hand StartAsync an empty list and make the
+        // "press 开始 without a manual connect" path fail every time.
+        try
         {
-            try
-            {
-                await Task.Delay(duration, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-
+            await Task.Delay(duration, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
             StopWatcher();
-            if (State == ImuSourceState.Scanning)
-            {
-                int count;
-                lock (_gate) count = _devices.Count;
-                SetState(ImuSourceState.Idle, count == 0 ? "未发现设备" : $"扫描结束，发现 {count} 台设备");
-            }
-        }, CancellationToken.None);
+        }
 
-        return Task.CompletedTask;
+        if (State == ImuSourceState.Scanning)
+        {
+            int count;
+            lock (_gate) count = _devices.Count;
+            SetState(ImuSourceState.Idle, count == 0 ? "未发现设备" : $"扫描结束，发现 {count} 台设备");
+        }
     }
 
     public async Task ConnectAsync(string deviceId, CancellationToken cancellationToken = default)
@@ -95,6 +96,9 @@ public sealed class WindowsBleImuSource : IBleImuSource
         await StopAsync().ConfigureAwait(false);
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         SetState(ImuSourceState.Connecting, "正在连接…");
+
+        // Which WinRT call was in flight when it blew up - the exception itself rarely says.
+        string stage = "解析地址";
 
         try
         {
@@ -120,30 +124,45 @@ public sealed class WindowsBleImuSource : IBleImuSource
             device.ConnectionStatusChanged += OnConnectionStatusChanged;
             _device = device;
 
-            var serviceResult = await device.GetGattServicesForUuidAsync(
-                    Guid.Parse(ProtocolConstants.ServiceUuid), BluetoothCacheMode.Uncached)
+            stage = "服务发现";
+
+            // The by-UUID overload cannot be the first GATT call on this handle: as a fresh
+            // discovery request it fails with 0x80070016 (ERROR_BAD_DEVICE), while the plain
+            // enumeration of the same device answers with every service, ours included. So
+            // enumerate and match the UUID locally. Measured 2026-09-23 on the MediaTek adapter.
+            var serviceResult = await device.GetGattServicesAsync(BluetoothCacheMode.Cached)
                 .AsTask(cancellationToken).ConfigureAwait(false);
 
-            if (serviceResult.Status != GattCommunicationStatus.Success || serviceResult.Services.Count == 0)
+            var serviceUuid = Guid.Parse(ProtocolConstants.ServiceUuid);
+            GattDeviceService? attitudeService = serviceResult.Services
+                .FirstOrDefault(s => s.Uuid == serviceUuid);
+
+            if (serviceResult.Status != GattCommunicationStatus.Success || attitudeService is null)
             {
-                SetState(ImuSourceState.Faulted, "GATT 服务不可用：" + serviceResult.Status);
+                SetState(ImuSourceState.Faulted,
+                    $"GATT 服务不可用：{serviceResult.Status}，发现 {serviceResult.Services.Count} 个服务");
                 return;
             }
 
-            _service = serviceResult.Services[0];
-            var charResult = await _service.GetCharacteristicsForUuidAsync(
-                    Guid.Parse(ProtocolConstants.AttitudeCharacteristicUuid), BluetoothCacheMode.Uncached)
+            _service = attitudeService;
+            stage = "特征发现";
+            var charResult = await _service.GetCharacteristicsAsync(BluetoothCacheMode.Cached)
                 .AsTask(cancellationToken).ConfigureAwait(false);
 
-            if (charResult.Status != GattCommunicationStatus.Success || charResult.Characteristics.Count == 0)
+            GattCharacteristic? attitudeCharacteristic = charResult.Characteristics
+                .FirstOrDefault(c => c.Uuid == Guid.Parse(ProtocolConstants.AttitudeCharacteristicUuid));
+
+            if (charResult.Status != GattCommunicationStatus.Success || attitudeCharacteristic is null)
             {
-                SetState(ImuSourceState.Faulted, "姿态特征不可用：" + charResult.Status);
+                SetState(ImuSourceState.Faulted,
+                    $"姿态特征不可用：{charResult.Status}，发现 {charResult.Characteristics.Count} 个特征");
                 return;
             }
 
-            _characteristic = charResult.Characteristics[0];
+            _characteristic = attitudeCharacteristic;
             _characteristic.ValueChanged += OnValueChanged;
 
+            stage = "订阅 CCCD";
             var cccdStatus = await _characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(
                     GattClientCharacteristicConfigurationDescriptorValue.Notify)
                 .AsTask(cancellationToken).ConfigureAwait(false);
@@ -154,6 +173,7 @@ public sealed class WindowsBleImuSource : IBleImuSource
                 return;
             }
 
+            Interlocked.Exchange(ref _firstSampleSeen, 0);
             SetState(ImuSourceState.Streaming, $"已连接 {name}，等待通知…");
         }
         catch (OperationCanceledException)
@@ -162,9 +182,19 @@ public sealed class WindowsBleImuSource : IBleImuSource
         }
         catch (Exception ex)
         {
-            SetState(ImuSourceState.Faulted, "连接失败：" + ex.Message);
+            // WinRT failures routinely arrive as a COMException with an empty Message, so the
+            // HRESULT is the only thing that identifies them. Without it the UI reads
+            // "connect failed:" and nothing else.
+            string detail = Describe(ex);
+            if (ex.InnerException is { } inner)
+                detail += " <- " + Describe(inner);
+
+            SetState(ImuSourceState.Faulted, $"连接失败（{stage}）：" + detail);
         }
     }
+
+    private static string Describe(Exception ex)
+        => $"{ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}";
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
@@ -236,19 +266,17 @@ public sealed class WindowsBleImuSource : IBleImuSource
 
     private void OnAdvertisementReceived(BluetoothLEAdvertisementWatcher sender, BluetoothLEAdvertisementReceivedEventArgs args)
     {
+        // Match by advertised name, never by MAC: Windows hands out randomized addresses and
+        // the firmware's own address is not a stable identity either. Anything unnamed is a
+        // neighbouring device and stays out of the list.
         string name = args.Advertisement?.LocalName ?? string.Empty;
-
-        if (name.Length > 0 &&
-            !name.Equals(ProtocolConstants.DeviceName, StringComparison.OrdinalIgnoreCase))
+        if (!name.Equals(ProtocolConstants.DeviceName, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
         string id = args.BluetoothAddress.ToString("X12");
-        var record = new BleDiscoveredDevice(
-            id,
-            string.IsNullOrWhiteSpace(name) ? ProtocolConstants.DeviceName : name,
-            args.RawSignalStrengthInDBm);
+        var record = new BleDiscoveredDevice(id, name, args.RawSignalStrengthInDBm);
 
         lock (_gate)
         {
@@ -274,6 +302,11 @@ public sealed class WindowsBleImuSource : IBleImuSource
         if (!AttitudePacket.TryDecode(buffer, out var packet))
             return;
 
+        // The connect path can only promise "subscribed"; whether packets actually arrive is
+        // first proven here. Leaving the status at "waiting" made a live stream look stalled.
+        if (Interlocked.Exchange(ref _firstSampleSeen, 1) == 0)
+            SetState(ImuSourceState.Streaming, $"数据流运行中（{ProtocolConstants.DeviceName}）");
+
         // Stamped here, at the driver boundary — the render path must never re-stamp.
         SampleReceived?.Invoke(this, new ImuSample(packet, ImuSample.Now));
     }
@@ -282,6 +315,17 @@ public sealed class WindowsBleImuSource : IBleImuSource
     {
         if (sender.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
             SetState(ImuSourceState.Faulted, "连接已断开");
+    }
+
+    private void StartWatcher()
+    {
+        var watcher = new BluetoothLEAdvertisementWatcher
+        {
+            ScanningMode = BluetoothLEScanningMode.Active,
+        };
+        watcher.Received += OnAdvertisementReceived;
+        _watcher = watcher;
+        watcher.Start();
     }
 
     private void StopWatcher()
