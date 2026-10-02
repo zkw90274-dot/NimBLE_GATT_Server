@@ -1,381 +1,235 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C6 | ESP32-H2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | -------- |
+<div align="center">
 
-# NimBLE GATT Server Example
+# NimBLE_GATT_Server
 
-## Overview
+**ESP32-S3 姿态采集端 + Windows 可视化上位机**
 
-This example is extended from NimBLE Connection Example, and further introduces
+BMI270 六轴 IMU → Fusion AHRS 解算 → BLE NOTIFY 推送 → WPF 实时曲线 / 3D 姿态
 
-1. How to implement a GATT server using GATT services table
-2. How to handle characteristic access requests
-    1. Write access demonstrated by LED control
-    2. Read and indicate access demonstrated by heart rate measurement(mocked)
+<br/>
 
-To test this demo, install *nRF Connect for Mobile* on your phone. 
+![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.4.3-blue?logo=espressif&logoColor=white)
+![Target](https://img.shields.io/badge/SoC-ESP32--S3-orange?logo=espressif&logoColor=white)
+![IMU](https://img.shields.io/badge/IMU-BMI270-00365f)
+![BLE](https://img.shields.io/badge/transport-NimBLE%20GATT-2B6CB0?logo=bluetooth&logoColor=white)
+![Host](https://img.shields.io/badge/host-.NET%208%20WPF-512BD4?logo=dotnet&logoColor=white)
+![Platform](https://img.shields.io/badge/OS-Windows%2010%20%2F%2011%20x64-0078D6?logo=windows&logoColor=white)
 
-Please refer to [BLE Introduction](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/ble/get-started/ble-introduction.html#:~:text=%E4%BE%8B%E7%A8%8B%E5%AE%9E%E8%B7%B5)
-for detailed example introduction and code explanation.
+![Release](https://img.shields.io/badge/release-v0.1.0-brightgreen)
+![Download](https://img.shields.io/badge/download-single--file%20exe%20%C2%B7%2081.6%20MB-blue)
+![Tests](https://img.shields.io/badge/unit%20tests-24%20passing-brightgreen)
+![Build](https://img.shields.io/badge/build-0%20warning%20%C2%B7%200%20error-green)
+![Real device](https://img.shields.io/badge/real%20BLE-69--75%20Hz%20%C2%B7%200%20dropped-blueviolet)
 
-## Try It Yourself
+</div>
 
-### Set Target
+---
 
-Before project configuration and build, be sure to set the correct chip target using:
+## 这是什么
 
-``` shell
-idf.py set-target <chip_name>
+一块 ESP32-S3 开发板（16 MB Flash / 8 MB PSRAM）读取板载 **BMI270 六轴 IMU**，用
+[xioTechnologies Fusion](https://github.com/xioTechnologies/Fusion)（vendored 到 `main/fusion/`）
+解算出 **roll / pitch / yaw**，通过一个自定义 BLE 特征以 **NOTIFY** 推给客户端；
+仓库内 `host/` 是配套的 **Windows 上位机**（.NET 8 WPF），把收到的角度画成数值 + 实时曲线 + 3D 板体姿态，
+最终打成**免安装单文件 exe**。
+
+固件与上位机**都已在真机验证**（固件 2026-09-22，上位机 BLE 链路与发布产物 2026-09-23 / 2026-10-02）。
+
+![上位机界面：仿真 500 Hz 压测，到达 498.7 Hz、丢帧 0、渲染 62 fps](docs/assets/host-ui.png)
+
+> 上报速率**由 BLE 连接间隔决定**，不是固件里的限速常量。`gap.c` 主动协商 15–30 ms + `latency=0`，
+> 真机实测 **71.6 Hz、零丢包**（详见 [docs/host-integration.md](docs/host-integration.md) §8）。
+
+## 核心特性
+
+| 能力 | 说明 |
+|---|---|
+| 🎯 **姿态解算** | Fusion AHRS（四元数 + 独立零偏估计器）。静止抖动 roll/pitch **0.026° / 0.031° std**，yaw **0.010° std**；摇晃时抗线性加速度比纯加速度计好约 3 倍 |
+| ⚡ **中断采样** | BMI270 data-ready → GPIO5，采样节拍由硬件中断驱动，不靠轮询 |
+| 📡 **纯 NOTIFY 链路** | 12 字节 / 包（3 × `float32` 小端，单位度），无校验和、无帧序号，帧定界交给 BLE 层 |
+| 🧪 **无硬件仿真模式** | 上位机内置 1–2000 Hz 可调仿真源，没有板子也能演示与压测 |
+| 🚀 **≥100 fps 吞吐** | 采集/渲染解耦（SPSC 无锁环 + 60 fps 渲染 tick 拉取），仿真 500 Hz 到达 498.7 Hz、丢帧 **0** |
+| 🤖 **无人值守 UI 验收** | `capture-ui.ps1` 用 UI Automation 驱动真实界面、自截图、判定读数冻结，不需要人坐在屏幕前 |
+| 📦 **单文件交付** | 自包含 + 压缩，`publish/NimBleImuHost.exe` 81.6 MB，目标机器无需预装 .NET |
+| 🔗 **零配对** | 无 PIN、无绑定，扫描 → 连接 → 写 CCCD 订阅即出数 |
+
+## 系统架构
+
+```mermaid
+flowchart LR
+    subgraph FW["ESP32-S3 固件（main/）"]
+        A["BMI270<br/>I2C 100 kHz"] -->|"data-ready<br/>INT1 → GPIO5"| B["IMU 任务<br/>采样 + 零偏标定"]
+        B --> C["Fusion AHRS<br/>四元数 → 欧拉角"]
+        C --> D["GATT 特征<br/>READ · NOTIFY"]
+        E["gap.c<br/>协商 15–30 ms"] -.->|"速率上限"| D
+    end
+    D -->|"BLE NOTIFY<br/>12 B / 包 ≈70 Hz"| F["WindowsBleImuSource<br/>扫描 / 连接 / CCCD / 解码"]
+    G["SimulatedImuSource<br/>1–2000 Hz 仿真"] -.-> H
+    F --> H["SPSC 无锁环<br/>丢帧计数"] --> I["渲染 tick 60 fps<br/>MainViewModel"]
+    I --> J["数值读数"]
+    I --> K["ScottPlot 曲线<br/>roll/pitch 左轴 · yaw 右轴"]
+    I --> L["3D 板体姿态"]
 ```
 
-For example, if you're using ESP32, then input
+**热路径纪律**：BLE 回调线程只做「解码 + 写环」，任何 UI/统计都在渲染 tick 里拉取——这是 500 Hz 压测丢帧为 0 的原因
+（设计依据见 [docs/host-app.md](docs/host-app.md) §2.5）。
 
-``` Shell
-idf.py set-target esp32
+## 快速开始
+
+### 环境前提
+
+| 项 | 值 |
+|---|---|
+| 目标芯片 | ESP32-S3 (QFN56) v0.2 |
+| ESP-IDF | v5.4.3 |
+| 串口 | COM3（按本机实际改） |
+| IMU 引脚 | SCL = GPIO1 / SDA = GPIO2 / INT = GPIO5，**依赖内部上拉**（板子没有外部上拉） |
+| app 分区 | 4 MB（`partitions.csv`），当前占用约 14% |
+| 上位机 | Windows 10/11 x64 + .NET 8 SDK（仅编译需要） |
+
+### 固件
+
+```bash
+idf.py set-target esp32s3      # 若曾配置失败，见下方「坑」——用 set_target.bat 更稳
+idf.py build
+idf.py -p COM3 flash
+idf.py -p COM3 monitor         # 退出：Ctrl-]
 ```
 
-### Build and Flash
+### 上位机 —— 三条路，按需要选
 
-Run the following command to build, flash and monitor the project.
+**① 直接下载 exe（最省事，对方无需装 .NET）**
 
-``` Shell
-idf.py -p <PORT> flash monitor
+去 [Releases](https://github.com/zkw90274-dot/NimBLE_GATT_Server/releases/tag/v0.1.0) 下载 `NimBleImuHost.exe`（81.6 MB），双击即可。
+未签名 exe 会触发 SmartScreen：「更多信息 → 仍要运行」。
+
+**② 从源码跑**
+
+```powershell
+cd host
+dotnet build -c Release                                  # 0 warning · 0 error
+dotnet test  -c Release --logger "console;verbosity=normal"   # 24 个用例
+dotnet run --project src/NimBleImuHost -c Release
 ```
 
-For example, if the corresponding serial port is `/dev/ttyACM0`, then it goes
+**③ 无硬件先看效果**
 
-``` Shell
-idf.py -p /dev/ttyACM0 flash monitor
+界面里数据源选「仿真」→ 点「开始」。仿真速率下拉框可选 20 / 100 / 250 / 500 Hz。
+
+真机路径：选「真实 BLE」→「扫描设备」→ 在列表里点 `NimBLE_GATT` →「连接所选设备」，订阅成功后自动开始推流。
+
+> ⚠️ **不要在 Windows「设置 → 蓝牙」里配对**——那是经典蓝牙流程，对 BLE GATT 设备无效。
+>
+> ⚠️ **扫描只能按设备名过滤**：广播包里没有服务 UUID，按 UUID 建过滤器必然 0 结果。
+
+## 接口速查
+
+对外契约的**唯一权威定义**在 [docs/host-integration.md](docs/host-integration.md) §2，此处只留最常用的一眼信息：
+
+| 项 | 值 |
+|---|---|
+| 设备名 | `NimBLE_GATT` |
+| 服务 UUID | `f0a1b2c3-d4e5-4f60-8a9b-000000000001` |
+| 特征 UUID | `f0a1b2c3-d4e5-4f60-8a9b-000000000002`（`READ \| NOTIFY`，**没有 WRITE**） |
+| 载荷 | 12 字节 = `roll` `pitch` `yaw`，3 × IEEE-754 `float32` **小端**，单位**度** |
+
+```python
+roll, pitch, yaw = struct.unpack("<fff", data)   # data 长度必须是 12
 ```
 
-(To exit the serial monitor, type ``Ctrl-]``.)
+设备上另有 **Heart Rate（`0x180D`，数据是随机数 mock）** 与 **Automation IO（`0x1815`，写 1 字节控制板载 WS2812）**
+两个服务，来自上游示例，别把心跳当真传感器。
 
-See the [Getting Started Guide](https://idf.espressif.com/) for full steps to configure and use ESP-IDF to build projects.
+## 目录结构
 
-## Code Explained
-
-### Overview
-
-1. Initialization
-    1. Initialize LED, NVS flash, NimBLE host stack, GAP service
-    2. Initialize GATT service and add services to registration queue
-    3. Configure NimBLE host stack and start NimBLE host task thread, GATT services will be registered automatically when NimBLE host stack started
-    4. Start heart rate update task thread
-2. Wait for NimBLE host stack to sync with BLE controller, and start advertising; wait for connection event to come
-3. After connection established, wait for GATT characteristics access events to come
-    1. On write LED event, turn on or off the LED accordingly
-    2. On read heart rate event, send out current heart rate measurement value
-    3. On indicate heart rate event, enable heart rate indication
-
-### Entry Point
-
-In this example, we call GATT `gatt_svr_init` function to initialize GATT server in `app_main` before NimBLE host configuration. This is a custom function defined in `gatt_svc.c`, and basically we just call GATT service initialization API and add services to registration queue.
-
-And there's another code added in `nimble_host_config_init`, which is 
-
-``` C
-static void nimble_host_config_init(void) {
-    ...
-
-    ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;
-
-    ...
-}
+```
+.
+├── main/                     固件应用
+│   ├── src/imu.c             BMI270 驱动 + Fusion 滤波（核心）
+│   ├── src/imu_dyntest.c     8 个引导动作的动态精度测试
+│   ├── src/gatt_svc.c        GATT 服务定义与访问回调
+│   ├── src/gap.c             广播 + 连接参数协商（决定上报速率）
+│   ├── fusion/               vendored Fusion AHRS（逐字节，见 fusion/README.md）
+│   └── include/              对外头文件
+├── host/                     Windows 上位机（.NET 8 WPF）
+│   ├── src/NimBleImuHost/    Protocol 解码 / BLE 与仿真源 / SPSC 环 → 渲染 tick
+│   ├── tests/                协议层单测（真机 hex 向量回放）+ 环形缓冲语义/吞吐单测
+│   └── scripts/              capture-ui.ps1（UIA 无人值守验收）· publish-portable.ps1（单文件发布）
+├── docs/                     工程文档 —— 实现细节都在这里
+├── partitions.csv            自定义分区表（4 MB app）
+└── set_target.bat            换 target 的安全脚本，绕开自锁坑
 ```
 
-That is GATT server register callback function. In this case it will only print out some registration information when services, characteristics or descriptors are registered.
+## 文档地图
 
-Then, after NimBLE host task thread is created, we'll create another task defined in `heart_rate_task` to update heart rate measurement mock value and send indication if enabled.
+本文件只放索引与速查，**实现细节一律在 `docs/`**：
 
-### GAP Service Updates
+| 文档 | 内容 | 什么时候读 |
+|---|---|---|
+| [docs/host-integration.md](docs/host-integration.md) | **上位机对接**：报文格式（权威定义）、连接流程、必读注意事项、解码示例、排错表、实测基准 | 写上位机 / 对接任何客户端时先看这份 |
+| [docs/host-app.md](docs/host-app.md) | **上位机工程**：选型依据、已完成/未完成、搭建复现、验证清单、单文件发布 | 改 `host/` 下代码或要出 exe 时 |
+| [docs/imu.md](docs/imu.md) | BMI270 驱动、Fusion 滤波、**陀螺仪过载坑**、中断采样、零偏标定、动态精度测试、万向节锁 | 改 IMU 引脚 / 量程 / 算法 / 采样方式时 |
+| [docs/ble-interface.md](docs/ble-interface.md) | **服务端内部视角**：服务定义、访问回调、订阅回调、代码位置 | 改 GATT 服务端代码时 |
+| [docs/build-and-flash.md](docs/build-and-flash.md) | 构建、烧录、分区表、踩过的坑 | 构建或烧录出问题时**先看这里** |
+| [docs/docs-convention.md](docs/docs-convention.md) | 文档分层约定：每层放什么、禁止复制清单 | 动文档结构之前 |
+| [CLAUDE.md](CLAUDE.md) | 面向 AI 协作者的索引：速查表 + 跨组件的坑 | 让 agent 接手前先读 |
 
-`gap_event_handler` is updated with LED control removed, and more event handling branches, when compared to NimBLE Connection Example, including
+## 质量与验证
 
-- `BLE_GAP_EVENT_ADV_COMPLETE` - Advertising complete event
-- `BLE_GAP_EVENT_NOTIFY_TX` - Notificate event
-- `BLE_GAP_EVENT_SUBSCRIBE` - Subscribe event
-- `BLE_GAP_EVENT_MTU` - MTU update event
+所有验证都是**可重跑**的，不是口头结论：
 
-`BLE_GAP_EVENT_ADV_COMPLETE` and `BLE_GAP_EVENT_MTU` events are actually not involved in this example, but we still put them down there for reference. `BLE_GAP_EVENT_NOTIFY_TX` and `BLE_GAP_EVENT_SUBSCRIBE` events will be discussed in the next section.
+| 门禁 | 命令 | 结果 |
+|---|---|---|
+| 编译 | `dotnet build -c Release` | 0 warning · 0 error ✅ |
+| 单测 | `dotnet test -c Release` | 24 / 24 绿（协议 14 + 环形缓冲 10，含真机 hex 向量）✅ |
+| 仿真压测 | `capture-ui.ps1 -SimRate 500` | 到达 498.5–498.8 Hz · 丢帧 0 · 渲染 64.5 fps ✅ |
+| 真机 BLE | `capture-ui.ps1 -Mode ble` | 到达 69.2–74.8 Hz · 丢帧 0 · 渲染 43–48 fps ✅ |
+| 交付物复验 | `capture-ui.ps1 -ExePath ../publish/NimBleImuHost.exe` | 仿真 + 真机两条路径按同一判据通过 ✅ |
+| 干净虚拟机 | 未装 .NET 的机器双击启动 | ⬜ 本机装了 .NET 8，证不了「不依赖已装运行时」 |
 
-### GATT Services Table
-
-GATT services are defined in `ble_gatt_svc_def` struct array, with a variable name `gatt_svr_svcs` in this demo. We'll call it as the GATT services table in the following content.
-
-``` C
-/* Heart rate service */
-static const ble_uuid16_t heart_rate_svc_uuid = BLE_UUID16_INIT(0x180D);
-
-static uint8_t heart_rate_chr_val[2] = {0};
-static uint16_t heart_rate_chr_val_handle;
-static const ble_uuid16_t heart_rate_chr_uuid = BLE_UUID16_INIT(0x2A37);
-
-static uint16_t heart_rate_chr_conn_handle = 0;
-static bool heart_rate_chr_conn_handle_inited = false;
-static bool heart_rate_ind_status = false;
-
-/* Automation IO service */
-static const ble_uuid16_t auto_io_svc_uuid = BLE_UUID16_INIT(0x1815);
-static uint16_t led_chr_val_handle;
-static const ble_uuid128_t led_chr_uuid =
-    BLE_UUID128_INIT(0x23, 0xd1, 0xbc, 0xea, 0x5f, 0x78, 0x23, 0x15, 0xde, 0xef,
-                     0x12, 0x12, 0x25, 0x15, 0x00, 0x00);
-
-/* GATT services table */
-static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
-    /* Heart rate service */
-    {.type = BLE_GATT_SVC_TYPE_PRIMARY,
-     .uuid = &heart_rate_svc_uuid.u,
-     .characteristics =
-         (struct ble_gatt_chr_def[]){
-             {/* Heart rate characteristic */
-              .uuid = &heart_rate_chr_uuid.u,
-              .access_cb = heart_rate_chr_access,
-              .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_INDICATE,
-              .val_handle = &heart_rate_chr_val_handle},
-             {
-                 0, /* No more characteristics in this service. */
-             }}},
-
-    /* Automation IO service */
-    {
-        .type = BLE_GATT_SVC_TYPE_PRIMARY,
-        .uuid = &auto_io_svc_uuid.u,
-        .characteristics =
-            (struct ble_gatt_chr_def[]){/* LED characteristic */
-                                        {.uuid = &led_chr_uuid.u,
-                                         .access_cb = led_chr_access,
-                                         .flags = BLE_GATT_CHR_F_WRITE,
-                                         .val_handle = &led_chr_val_handle},
-                                        {0}},
-    },
-    
-    {
-        0, /* No more services. */
-    },
-};
+```powershell
+cd host
+powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -SimRate 500 -Tag stress
+powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Mode ble -Tag ble
+powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 ```
 
-In this table, there are two GATT primary services defined
+<details>
+<summary><b>还没做完的事（如实）</b></summary>
 
-- Heart rate service with a UUID of `0x180D`
-- Automation IO service with a UUID of `0x1815`
+- **需要人手的三项真机验证**：① 扭板子核对 3D 轴向；② 断电重上观察 yaw 归零；③ 断链后看 `Faulted` 不假死。链路本身已联调，这三项只是缺人在板子旁边动手。
+- **干净虚拟机双击验证**：唯一未满足的发布判据。
+- **上位机侧再提速**：需要 DLE / Win11 `ThroughputOptimized`（TFM 抬到 ≥ 10.0.22000.0），并与固件侧一起改。
+- **明确不做**（当前范围外）：CSV 导出、上位机下发 LED 控制、多连接、断线自动重连。
 
-#### Automation IO Service
+</details>
 
-Under automation IO service, there's a LED characteristic, with a vendor-specific UUID and write only permission.
+## 踩过的坑（精选）
 
-The characteristic is binded with `led_chr_access` callback function, in which the write access event is captured. The LED will be turned on or off according to the write value, quite straight-forward.
+<details>
+<summary><b>固件侧</b></summary>
 
-``` C
-static int led_chr_access(uint16_t conn_handle, uint16_t attr_handle,
-                          struct ble_gatt_access_ctxt *ctxt, void *arg) {
-    /* Local variables */
-    int rc;
+- **`set-target` 自锁**：`idf.py` 每次运行都会创建 `build/log/`。只要有一次 cmake 配置失败，`build/` 就成了「有内容但没有 `CMakeCache.txt`」的状态，此后**所有** `set-target` 永久失败。解法：删掉或改名 `build/` 重来，或直接用仓库根的 `set_target.bat`。
+- **只改 `CONFIG_ESPTOOLPY_FLASHSIZE` 不会扩大 app 分区**：IDF 默认分区表把 `factory` 硬编码成 `1M`，与 Flash 尺寸无关，必须配 `partitions.csv`。
+- **陀螺仪过载导致重启**（已关闭的坑）：量程与环路增益不匹配时积分饱和，细节见 [docs/imu.md](docs/imu.md) §4.4。
+- **`E i2c.master: this port has not been initialized`** 是 `espressif/i2c_bus` 把正常的总线探测结果用 ERROR 级别打出来，**无害**；`idf.py` 报 venv 不匹配是大小写敏感比较路径的误报（`e:\` vs `E:\`），同样**无害**。
 
-    /* Handle access events */
-    /* Note: LED characteristic is write only */
-    switch (ctxt->op) {
+</details>
 
-    /* Write characteristic event */
-    case BLE_GATT_ACCESS_OP_WRITE_CHR:
-        /* Verify connection handle */
-        if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-            ESP_LOGI(TAG, "characteristic write; conn_handle=%d attr_handle=%d",
-                     conn_handle, attr_handle);
-        } else {
-            ESP_LOGI(TAG,
-                     "characteristic write by nimble stack; attr_handle=%d",
-                     attr_handle);
-        }
+<details>
+<summary><b>上位机侧</b></summary>
 
-        /* Verify attribute handle */
-        if (attr_handle == led_chr_val_handle) {
-            /* Verify access buffer length */
-            if (ctxt->om->om_len == 1) {
-                /* Turn the LED on or off according to the operation bit */
-                if (ctxt->om->om_data[0]) {
-                    led_on();
-                    ESP_LOGI(TAG, "led turned on!");
-                } else {
-                    led_off();
-                    ESP_LOGI(TAG, "led turned off!");
-                }
-            } else {
-                goto error;
-            }
-            return rc;
-        }
-        goto error;
+- **广播包里没有任何服务 UUID**，按 UUID 建扫描过滤器必然扫不到设备（本项目踩过一次）。客户端身份的权威依据是**设备名**。
+- **`yaw` 是相对开机时刻的相对角，会漂移**（实测 ≈0.1°/min），不是绝对方位；接近 `pitch = ±90°` 会撞万向节锁，3D 模型姿态乱跳属预期。
+- **交付物是快照，不是软链**：`publish/*.exe` 不会跟着 `bin/` 变。任何代码改动之后都要重跑 `publish-portable.ps1`，再用 `-ExePath` 复验，否则「我验过了」不成立。
+- **验收脚本的已知弱点**：`-SimRate` 靠连发 `{DOWN}` 选下拉框，可能漏按/多按且从不校验实际速率。压测数字只认状态行「（N Hz）」与目标一致的那些运行。
 
-    /* Unknown event */
-    default:
-        goto error;
-    }
+</details>
 
-error:
-    ESP_LOGE(TAG,
-             "unexpected access operation to led characteristic, opcode: %d",
-             ctxt->op);
-    return BLE_ATT_ERR_UNLIKELY;
-}
-```
+## 致谢与许可
 
-#### Heart Rate Service
-
-Under heart rate service, there's a heart rate measurement characteristic, with a UUID of `0x2A37` and read + indicate access permission.
-
-The characteristic is binded with `heart_rate_chr_access` callback function, in which the read access event is captured. It should be mentioned that in SIG definition, heart rate measurement is a multi-byte data structure, with the first byte indicating the flags
-
-- Bit 0: Heart rate value type
-    - 0: Heart rate value is `uint8_t` type
-    - 1: Heart rate value is `uint16_t` type
-- Bit 1: Sensor contact status
-- Bit 2: Sensor contact supported
-- Bit 3: Energy expended status
-- Bit 4: RR-interval status
-- Bit 5-7: Reserved
-
-and the rest of bytes are data fields. In this case, we use `uint8_t` type and disable other features, making the characteristic value a 2-byte array. So when characteristic read event arrives, we'll get the latest heart rate value and send it back to peer device.
-
-``` C
-static int heart_rate_chr_access(uint16_t conn_handle, uint16_t attr_handle,
-                                 struct ble_gatt_access_ctxt *ctxt, void *arg) {
-    /* Local variables */
-    int rc;
-
-    /* Handle access events */
-    /* Note: Heart rate characteristic is read only */
-    switch (ctxt->op) {
-
-    /* Read characteristic event */
-    case BLE_GATT_ACCESS_OP_READ_CHR:
-        /* Verify connection handle */
-        if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-            ESP_LOGI(TAG, "characteristic read; conn_handle=%d attr_handle=%d",
-                     conn_handle, attr_handle);
-        } else {
-            ESP_LOGI(TAG, "characteristic read by nimble stack; attr_handle=%d",
-                     attr_handle);
-        }
-
-        /* Verify attribute handle */
-        if (attr_handle == heart_rate_chr_val_handle) {
-            /* Update access buffer value */
-            heart_rate_chr_val[1] = get_heart_rate();
-            rc = os_mbuf_append(ctxt->om, &heart_rate_chr_val,
-                                sizeof(heart_rate_chr_val));
-            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
-        }
-        goto error;
-
-    /* Unknown event */
-    default:
-        goto error;
-    }
-
-error:
-    ESP_LOGE(
-        TAG,
-        "unexpected access operation to heart rate characteristic, opcode: %d",
-        ctxt->op);
-    return BLE_ATT_ERR_UNLIKELY;
-}
-```
-
-Indicate access, however, is a bit more complicated. As mentioned in *GAP Service Updates*, we'll handle another 2 events namely `BLE_GAP_EVENT_NOTIFY_TX` and `BLE_GAP_EVENT_SUBSCRIBE` in `gap_event_handler`. In this case, if peer device wants to enable heart rate measurement indication, it will send a subscribe request to the local device, and the request will be captured as a subscribe event in `gap_event_handler`. But from the perspective of software layering, the event should be handled in GATT server, so we just pass the event to GATT server by calling `gatt_svr_subscribe_cb`, as demonstrated in the demo
-
-``` C
-static int gap_event_handler(struct ble_gap_event *event, void *arg) {
-    ...
-
-    /* Subscribe event */
-    case BLE_GAP_EVENT_SUBSCRIBE:
-        /* Print subscription info to log */
-        ESP_LOGI(TAG,
-                    "subscribe event; conn_handle=%d attr_handle=%d "
-                    "reason=%d prevn=%d curn=%d previ=%d curi=%d",
-                    event->subscribe.conn_handle, event->subscribe.attr_handle,
-                    event->subscribe.reason, event->subscribe.prev_notify,
-                    event->subscribe.cur_notify, event->subscribe.prev_indicate,
-                    event->subscribe.cur_indicate);
-
-        /* GATT subscribe event callback */
-        gatt_svr_subscribe_cb(event);
-        return rc;
-    
-    ...
-}
-```
-
-Then we'll check connection handle and attribute handle, if the attribute handle matches `heart_rate_chr_val_chandle`, `heart_rate_chr_conn_handle` and `heart_rate_ind_status` will be updated together. 
-
-``` C
-void gatt_svr_subscribe_cb(struct ble_gap_event *event) {
-    /* Check connection handle */
-    if (event->subscribe.conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-        ESP_LOGI(TAG, "subscribe event; conn_handle=%d attr_handle=%d",
-                 event->subscribe.conn_handle, event->subscribe.attr_handle);
-    } else {
-        ESP_LOGI(TAG, "subscribe by nimble stack; attr_handle=%d",
-                 event->subscribe.attr_handle);
-    }
-
-    /* Check attribute handle */
-    if (event->subscribe.attr_handle == heart_rate_chr_val_handle) {
-        /* Update heart rate subscription status */
-        heart_rate_chr_conn_handle = event->subscribe.conn_handle;
-        heart_rate_chr_conn_handle_inited = true;
-        heart_rate_ind_status = event->subscribe.cur_indicate;
-    }
-}
-```
-
-Notice that heart rate measurement incation is handled in `heart_rate_task` by calling `send_heart_rate_indication` function periodically. Actually, this function will check heart rate indication status and send indication accordingly. In this way, heart rate indication is implemented.
-
-``` C
-void send_heart_rate_indication(void) {
-    if (heart_rate_ind_status && heart_rate_chr_conn_handle_inited) {
-        ble_gatts_indicate(heart_rate_chr_conn_handle,
-                           heart_rate_chr_val_handle);
-        ESP_LOGI(TAG, "heart rate indication sent!");
-    }
-}
-
-static void heart_rate_task(void *param) {
-    /* Task entry log */
-    ESP_LOGI(TAG, "heart rate task has been started!");
-
-    /* Loop forever */
-    while (1) {
-        /* Update heart rate value every 1 second */
-        update_heart_rate();
-        ESP_LOGI(TAG, "heart rate updated to %d", get_heart_rate());
-
-        /* Send heart rate indication if enabled */
-        send_heart_rate_indication();
-
-        /* Sleep */
-        vTaskDelay(HEART_RATE_TASK_PERIOD);
-    }
-
-    /* Clean up at exit */
-    vTaskDelete(NULL);
-}
-```
-
-## Observation
-
-If everything goes well, you should be able to see 4 services when connected to ESP32, including
-
-- Generic Access
-- Generic Attribute
-- Heart Rate
-- Automation IO
-
-Click on Automation IO Service, you should be able to see LED characteristic. Click on upload button, you should be able to write `ON` or `OFF` value. Send it to the device, LED will be turned on or off following your instruction.
-
-Click on Heart Rate Service, you should be able to see Heart Rate Measurement characteristic. Click on download button, you should be able to see the latest heart rate measurement mock value, and it should be consistent with what is shown on serial output. Click on subscribe button, you should be able to see the heart rate measurement mock value updated every second.
-
-## Troubleshooting
-
-For any technical queries, please file an [issue](https://github.com/espressif/esp-idf/issues) on GitHub. We will get back to you soon.
+- 固件从 ESP-IDF 官方 NimBLE 示例派生（[`examples/bluetooth/nimble/`](https://github.com/espressif/esp-idf/tree/v5.4.3/examples/bluetooth/nimble)，Apache-2.0），
+  在上游的心跳服务 + Automation IO 控制 LED 骨架上加入 BMI270 驱动、Fusion 姿态解算与上位机。
+- 姿态滤波：[xioTechnologies/Fusion](https://github.com/xioTechnologies/Fusion)，逐字节 vendored 于 `main/fusion/`。
+- 上位机曲线：[ScottPlot](https://scottplot.net/) 5（`ScottPlot.WPF 5.1.59`）；抗高速率流水线的思路参考 Serial Studio。
+- 本仓库当前**未附带 LICENSE 文件**，正式许可待定；引用上游代码的许可义务以上游为准。
