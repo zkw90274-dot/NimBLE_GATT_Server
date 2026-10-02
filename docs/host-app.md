@@ -146,6 +146,7 @@ MainWindow 渲染 tick（DispatcherTimer，请求 8 ms → 实测 ~64 fps）
 | `tests/AttitudeRingBufferTests.cs` | ✅ 10 个用例全绿（顺序、回绕、溢出计数、生产消费守恒、热路径吞吐） |
 | `scripts/capture-ui.ps1` | ✅ 启动 + UIA 点击/选速率 + 窗口截图 + 读数冻结判定，无人值守 UI 验收；`-Mode ble` 走真机，`-ExePath` 直接验收发布产物，`-PlotMenu` 验右键菜单（§5.3.3） |
 | `scripts/publish-portable.ps1` | ✅ 自包含单文件发布 + 体积判据（实测 81.6 MB，见 §5.5） |
+| `scripts/make-icon.ps1` | ✅ 生成 `app.ico`，重跑逐字节一致（见 §5.3.4） |
 
 ### 3.2 未完成
 
@@ -393,6 +394,11 @@ powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Seconds 3 -Shot
 
 结构变化：状态行从左侧栏底部移到**整窗底部状态栏**；左栏卡片化（数据源 / 姿态角 / 流水线 / 提示四张卡）；
 开始/停止与扫描/连接按钮换成自定义圆角模板；绘图区与 3D 区装进无内边距的卡片。
+
+**应用图标**：`src/NimBleImuHost/app.ico` —— 青绿圆角底 + 白色板体 + 橙色机头，与 3D 视图同一套语言，
+标题栏与 exe 共用。它是二进制资产，源码是 `scripts/make-icon.ps1`（System.Drawing 画 256 px → 缩放出
+48/32/16 → 按 PNG-in-ICO 打包；已验证重跑产出与仓库里的 ico 逐字节一致）。`csproj` 里
+`ApplicationIcon` 只盖 exe 图标，标题栏/任务栏还要 `Window Icon="app.ico"` + `<Resource Include>` 两条一起。
 
 **没动的契约**（验收脚本靠这些找控件、做断言）：所有按钮/单选/下拉的 Name、状态文案一字未改；
 `Viewport` 的 AutomationId 保留（`-PlotMenu` 的几何锚点）；画布标题/轴标签仍 ASCII（§6 坑 7）。
