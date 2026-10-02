@@ -67,6 +67,8 @@ public partial class MainWindow : Window
         // yaw spans ±180°; on a shared axis it would flatten roll/pitch to a straight line.
         _yawAxis = plt.Axes.AddRightAxis();
 
+        StylePlotForLightTheme(plt);
+
         LocalizePlotMenu();
 
         _timer.Start();
@@ -100,6 +102,20 @@ public partial class MainWindow : Window
             item.Label = label;
             items[i] = item;
         }
+    }
+
+    /// <summary>
+    /// Match the chart to the light shell. ScottPlot's defaults are already white-on-black-text,
+    /// so this only softens the chrome: grey ticks/labels, pale grid, bordered legend.
+    /// </summary>
+    private static void StylePlotForLightTheme(ScottPlot.Plot plt)
+    {
+        plt.FigureBackground.Color = ScottPlot.Color.FromHex("#FFFFFF");
+        plt.DataBackground.Color = ScottPlot.Color.FromHex("#FCFDFE");
+        plt.Axes.Color(ScottPlot.Color.FromHex("#5B6472"));
+        plt.Grid.MajorLineColor = ScottPlot.Color.FromHex("#E4E9EF");
+        plt.Legend.BackgroundColor = ScottPlot.Color.FromHex("#FFFFFF");
+        plt.Legend.OutlineColor = ScottPlot.Color.FromHex("#D8DEE6");
     }
 
     private void OnRenderTick(object? sender, EventArgs e)
@@ -169,16 +185,17 @@ public partial class MainWindow : Window
     private void EnsureSeries()
     {
         var plt = Plot.Plot;
-        _rollPlot ??= AddSeries(plt, _rolls, "roll", "#FF6347", yAxis: null);
-        _pitchPlot ??= AddSeries(plt, _pitches, "pitch", "#7CFC00", yAxis: null);
-        _yawPlot ??= AddSeries(plt, _yaws, "yaw", "#4FC3F7", _yawAxis);
+        // Hex must match the readout dots in MainWindow.xaml.
+        _rollPlot ??= AddSeries(plt, _rolls, "roll", "#E4572E", yAxis: null);
+        _pitchPlot ??= AddSeries(plt, _pitches, "pitch", "#2A9D8F", yAxis: null);
+        _yawPlot ??= AddSeries(plt, _yaws, "yaw", "#457B9D", _yawAxis);
     }
 
     private ScottPlot.Plottables.SignalXY AddSeries(ScottPlot.Plot plt, double[] ys, string label, string hex, ScottPlot.IYAxis? yAxis)
     {
         var series = plt.Add.SignalXY(_xs, ys);
         series.LegendText = label;
-        series.LineWidth = 1.4f;
+        series.LineWidth = 1.8f;
         series.MarkerSize = 0;
         series.Color = ScottPlot.Color.FromHex(hex);
         if (yAxis is not null)

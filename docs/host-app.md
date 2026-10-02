@@ -139,7 +139,7 @@ MainWindow 渲染 tick（DispatcherTimer，请求 8 ms → 实测 ~64 fps）
 | `Ble/WindowsBleImuSource.cs` | ✅ 扫描 / 连接 / CCCD / Notify 解码，**已真机实测**（2026-09-23，见 §5.4.1） |
 | `ViewModels/MainViewModel.cs` | ✅ 生产侧只写环；读数与统计只在渲染 tick 更新 |
 | `Views/Attitude3DView.xaml(.cs)` | ✅ 板体 + 姿态旋转 + 世界轴 |
-| `MainWindow.xaml` | ✅ 左侧控制/数值/流水线统计 + 仿真速率选择 + 右侧 3D/曲线 |
+| `MainWindow.xaml` | ✅ 左侧卡片（数据源/姿态角/流水线/提示）+ 仿真速率选择 + 右侧 3D/曲线 + 底部状态栏；浅色主题见 §5.3.4 |
 | `MainWindow.xaml.cs` | ✅ 渲染 tick 拉取环形缓冲，`SignalXY` 预分配数组原地更新，roll/pitch 左轴 + yaw 右轴；右键菜单四项中文化（§5.3.3） |
 | `NimBleImuHost.csproj` | ✅ TFM `net8.0-windows10.0.19041.0`，引用 `ScottPlot.WPF 5.1.59` |
 | `tests/AttitudePacketTests.cs` | ✅ 14 个用例全绿（含真机 4 组 hex 向量回放） |
@@ -379,6 +379,27 @@ powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Seconds 3 -Shot
 **未处理**：菜单以外的 ScottPlot 内置文案（保存文件对话框的 filter、「在新窗口打开」的窗口标题）
 仍是英文，要改得连 `OnInvoke` 一起替换成自己的实现。
 
+### 5.3.4 界面主题重绘（清新浅色，`ui-polish` 分支 2026-10-02，**未合并**）
+
+整窗从近黑主题（`#12151A`）重绘为浅色卡片风。配色一处定义、两处引用：
+
+| 角色 | 值 |
+|---|---|
+| 窗口底 / 卡片 / 卡片边框 | `#F4F7F9` / `#FFFFFF` / `#E3EAF0`（圆角 10） |
+| 主色（开始/停止按钮） | `#10A594`，hover `#0C8B7D`，pressed `#0A7468` |
+| 文本 主/次/弱 | `#1F2933` / `#52606D` / `#7B8794`，提示 `#9AA5B1` |
+| 曲线 roll / pitch / yaw | `#E4572E` / `#2A9D8F` / `#457B9D` —— **读数色点同色**，`MainWindow.xaml` 的 Ellipse 与 `EnsureSeries()` 的 hex 必须一致 |
+| 3D 世界轴 X/Y/Z | `#D64545` / `#4CAF50` / `#3D7DD8`；板体绿 `#3AA680` 系、机头橙 `#FF7A45` |
+
+结构变化：状态行从左侧栏底部移到**整窗底部状态栏**；左栏卡片化（数据源 / 姿态角 / 流水线 / 提示四张卡）；
+开始/停止与扫描/连接按钮换成自定义圆角模板；绘图区与 3D 区装进无内边距的卡片。
+
+**没动的契约**（验收脚本靠这些找控件、做断言）：所有按钮/单选/下拉的 Name、状态文案一字未改；
+`Viewport` 的 AutomationId 保留（`-PlotMenu` 的几何锚点）；画布标题/轴标签仍 ASCII（§6 坑 7）。
+
+验收（仿真，板子不在身边）：`fresh3-*` 截图人眼复核；`-SimRate 100` 到达 101.0 Hz、渲染 58.3 fps、丢帧 0
+（主题不碰采集/渲染热路径，压测数字与重绘前同档）；`-PlotMenu` 四项中文菜单 + 剪贴板有图，全过。
+
 ### 5.4 真机 BLE 验收
 
 前置：固件已运行、串口可看到 `imu: roll ...`、手机/其它客户端已断开（**单连接**）。
@@ -477,6 +498,8 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 21. **WPF 弹层不在主窗口的 UIA 子树里，而且只认前台真鼠标** —— `ContextMenu`/`Popup` 是独立顶层 HWND：从桌面根用 `TreeScope.Children` 找不到那个 `Menu` 节点，要 `Subtree`。`InvokePattern` 也打不开它 —— ScottPlot 只在真实鼠标输入上弹菜单，得 `SetCursorPos` + `mouse_event` 右键。而后台进程发的合成点击只会落到当时最前面的窗口，所以点之前必须破一次**前台锁**：假按一次 Alt（`keybd_event 0x12`）再 `SetForegroundWindow`，并且**临点前重申一次**（脚本自己跑着跑着前台就回去了）。`WpfPlot` 派生自 Panel，没有 `AutomationPeer`，压根不在树里，只能按几何定位：3D 视图（`AutomationId=Viewport`）底边到窗口底边之间那条带，取靠上的 1/3；取中点会掉进状态栏。
 22. **仿真速率下拉框的 `{DOWN}` 连发不可靠** —— 脚本假设初值是第 0 项，连发 N 次到位，但实测会漏按/多按（见过 `-SimRate 100` 选出 500 Hz、`-SimRate 250` 选出 20 Hz），而且**从不校验实际选中的速率**。§5.3.2 表里三行是状态行「（20/100/500 Hz）」与目标一致的那些运行，不一致的运行当场弃用。要把它变成可信压测开关，得改成"发完再读状态行核对，不符就重试"。
 23. **改完代码别忘了重发交付物** —— `publish\NimBleImuHost.exe` 是发布那一刻的快照，不会跟着 `bin\` 变。验收脚本默认打 `bin\`，用户双击的却是 `publish\`，两边不一致时"我验过了"就是假话（中文化那次就这么被戳穿了一回）。凡是给用户跑的产物，改完代码就重跑 `publish-portable.ps1`，再用 `-ExePath` 复验（§5.5）。
+24. **自定义 Button 模板会留下虚线焦点框** —— 换 `ControlTemplate` 只换了外观，`FocusVisualStyle` 还是系统那套点线框；UIA `Invoke` 或键盘操作把焦点留给按钮后，那圈虚线就一直在截图里。模板所在 Style 里加 `FocusVisualStyle="{x:Null}"`。
+25. **别给每帧重绘的控件套 `Effect`** —— `DropShadowEffect` 会让 WPF 每帧重渲染离屏位图，绘图卡 60 fps 下是纯亏。浅色主题要"浮起来"的感觉，用 1px 边框 + 浅灰底衬就够（§5.3.4）。
 
 ---
 

@@ -38,19 +38,19 @@ public partial class Attitude3DView : System.Windows.Controls.UserControl
         };
 
         _root.Children.Add(new ModelVisual3D { Content = new DirectionalLight(Colors.White, new Vector3D(-1, -2, -1)) });
-        _root.Children.Add(new ModelVisual3D { Content = new AmbientLight(Color.FromRgb(90, 90, 100)) });
+        _root.Children.Add(new ModelVisual3D { Content = new AmbientLight(Color.FromRgb(115, 115, 122)) });
 
         var board = new GeometryModel3D
         {
             Geometry = BuildBox(1.2, 0.08, 0.8),
-            Material = MaterialFrom(Color.FromRgb(30, 120, 80)),
-            BackMaterial = MaterialFrom(Color.FromRgb(20, 80, 55)),
+            Material = MaterialFrom(Color.FromRgb(58, 166, 128)),
+            BackMaterial = MaterialFrom(Color.FromRgb(40, 128, 100)),
         };
 
         var nose = new GeometryModel3D
         {
             Geometry = BuildBox(0.2, 0.02, 0.15),
-            Material = MaterialFrom(Colors.OrangeRed),
+            Material = MaterialFrom(Color.FromRgb(255, 122, 69)),
             Transform = new TranslateTransform3D(0, 0.06, 0.35),
         };
 
@@ -64,9 +64,9 @@ public partial class Attitude3DView : System.Windows.Controls.UserControl
         mg.Children.Add(nose);
         _root.Children.Add(new ModelVisual3D { Content = mg, Transform = tg });
 
-        _root.Children.Add(AxisLine(new Point3D(0, 0, 0), new Vector3D(1, 0, 0), Colors.Tomato, 0.9));
-        _root.Children.Add(AxisLine(new Point3D(0, 0, 0), new Vector3D(0, 1, 0), Colors.LimeGreen, 0.9));
-        _root.Children.Add(AxisLine(new Point3D(0, 0, 0), new Vector3D(0, 0, 1), Colors.DodgerBlue, 0.9));
+        _root.Children.Add(AxisLine(new Point3D(0, 0, 0), new Vector3D(1, 0, 0), Color.FromRgb(214, 69, 69), 0.9));
+        _root.Children.Add(AxisLine(new Point3D(0, 0, 0), new Vector3D(0, 1, 0), Color.FromRgb(76, 175, 80), 0.9));
+        _root.Children.Add(AxisLine(new Point3D(0, 0, 0), new Vector3D(0, 0, 1), Color.FromRgb(61, 125, 216), 0.9));
 
         Viewport.Children.Add(_root);
     }
