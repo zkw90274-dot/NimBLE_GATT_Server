@@ -300,7 +300,7 @@ dotnet test -c Release --logger "console;verbosity=normal" 2>&1 | Select-Object 
 
 ### 5.3.1 仿真验收结果（2026-09-23，`scripts/capture-ui.ps1` 无人值守）
 
-脚本会启动 exe、用 UIA 按名字点「开始 / 停止」、把窗口截到 `host/artifacts/ui/*.png` 并 dump 左侧数值。
+脚本会启动 exe、用 UIA 按名字点「开始 / 停止」、把窗口截到 `host/artifacts/ui/*.png`（gitignored 临时目录，验收后清理）并 dump 左侧数值。
 
 ```powershell
 cd E:\Project\espidf_prj\NimBLE_GATT_Server\host
@@ -335,7 +335,7 @@ powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Seconds 5 -SimR
 | 100 Hz | 99.6–100.1 Hz | 58.9–62.5 fps | 0 | **目标达成**：100 fps 数据全收，UI 满帧 ✅ |
 | 500 Hz | 498.5–498.8 Hz | 64.5–64.6 fps | 0 | 5× 余量；曲线窗宽自动缩到 2.4 s（1200 点）✅ |
 
-截图在 `host/artifacts/ui/`（`sim20c-*`、`sim100c-*`、`sim500b-*`）。500 Hz 那张可核对：x 轴只剩 2.4 s、
+截图落在 `host/artifacts/ui/`（gitignored 临时目录，验收后即清理、不入库；要复核用上面命令加 `-Tag` 重跑再生成）。500 Hz 那张可核对：x 轴只剩 2.4 s、
 三条轨迹仍连续、yaw 右轴刻度合理、3D 与数值一致。
 
 配套单测（`AttitudeRingBufferTests`，10 例）锁住的是流水线的语义，不依赖界面：
@@ -373,14 +373,14 @@ powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Seconds 3 -Shot
 ```
 
 1. 真鼠标右键点绘图区 → 在桌面 UIA 树里找带「自动缩放」的 `Menu` 节点，断言四项标签；
-2. 截图 `artifacts/ui/menu7-plot-menu.png`（`-Tag menu7` 那次），人眼复核菜单位置与字形；
+2. 用 `-Tag menu7` 重跑生成截图（临时产物，复核方式见 §5.3.2 说明），人眼复核菜单位置与字形；
 3. **按下「复制到剪贴板」并检查剪贴板里确实有图** —— 改名是对 `ContextMenuItem`（struct）做读-改-写，
    只改到副本的话标签会变中文但点了没反应，光看截图查不出来。实测 `clipboard holds an image: True` ✅
 
 **未处理**：菜单以外的 ScottPlot 内置文案（保存文件对话框的 filter、「在新窗口打开」的窗口标题）
 仍是英文，要改得连 `OnInvoke` 一起替换成自己的实现。
 
-### 5.3.4 界面主题重绘（清新浅色，`ui-polish` 分支 2026-10-02，**未合并**）
+### 5.3.4 界面主题重绘（清新浅色，2026-10-02 已合并进 `main`）
 
 整窗从近黑主题（`#12151A`）重绘为浅色卡片风。配色一处定义、两处引用：
 
@@ -403,8 +403,11 @@ powershell -ExecutionPolicy Bypass -File scripts\capture-ui.ps1 -Seconds 3 -Shot
 **没动的契约**（验收脚本靠这些找控件、做断言）：所有按钮/单选/下拉的 Name、状态文案一字未改；
 `Viewport` 的 AutomationId 保留（`-PlotMenu` 的几何锚点）；画布标题/轴标签仍 ASCII（§6 坑 7）。
 
-验收（仿真，板子不在身边）：`fresh3-*` 截图人眼复核；`-SimRate 100` 到达 101.0 Hz、渲染 58.3 fps、丢帧 0
+验收（仿真，板子不在身边）：截图人眼复核；`-SimRate 100` 到达 101.0 Hz、渲染 58.3 fps、丢帧 0
 （主题不碰采集/渲染热路径，压测数字与重绘前同档）；`-PlotMenu` 四项中文菜单 + 剪贴板有图，全过。
+合并进 `main` 后按 §5.5 重发交付物并用 `-ExePath` 复验（2026-10-02）：标题栏新图标、浅色主题、
+500 Hz 丢帧 0、「停止」冻结、`-PlotMenu` 中文 + 剪贴板有图，全过。验收截图是 gitignored 临时产物，
+收尾已清理（`host/artifacts/` 不入库，重跑脚本自建）；`ui-polish` 分支合并后已删除。
 
 ### 5.4 真机 BLE 验收
 
@@ -468,7 +471,7 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 
 `capture-ui.ps1` 的 `-ExePath` 就是为这一步加的：交付物本身要按同一套判据验收，不能只测 `bin\` 里的构建产物。相对路径按脚本所在目录解析，与调用者的 cwd 无关。
 
-**产物是快照，不是软链**（2026-09-23 被自己咬过一次）：中文化提交后我去验的是 `bin\`，用户双击 `publish\` 里 19:01 那份旧 exe，看到的仍是英文菜单。任何代码改动之后都要重跑 `publish-portable.ps1`，再按 `-ExePath` 复验。最近一次重发（含右键菜单中文化）产物 81.6 MB，`-ExePath ../publish/NimBleImuHost.exe -PlotMenu` 复验：四个中文标签在、按下「复制到剪贴板」剪贴板有图、仿真 20 Hz 到达 19.8 Hz 丢帧 0（截图 `artifacts/ui/pubmenu-plot-menu.png`）。100/500 Hz 与真机 BLE **未**在新 exe 上复跑——这次改动只在窗口加载时改四个标签，不碰采集/渲染热路径。
+**产物是快照，不是软链**（2026-09-23 被自己咬过一次）：中文化提交后我去验的是 `bin\`，用户双击 `publish\` 里 19:01 那份旧 exe，看到的仍是英文菜单。任何代码改动之后都要重跑 `publish-portable.ps1`，再按 `-ExePath` 复验。最近一次重发（2026-10-02，合并浅色主题 + 新图标后，`-Clean`）产物 81.6 MB，`-ExePath ../publish/NimBleImuHost.exe` 复验：标题栏新图标、浅色主题正常；`-PlotMenu` 四个中文标签在、按下「复制到剪贴板」剪贴板有图；仿真压测到达 500 Hz 丢帧 0、渲染 ~63 fps（`-SimRate 100` 因 §6.22 的下拉框弱点实际落到 500，属更严的负载，结论不变）；「停止」后读数冻结、再「开始」恢复。真机 BLE **未**在新 exe 上复跑（板子不在身边）——本次改动不碰采集/渲染热路径与 BLE 链路。验收截图为临时产物、收尾已清理，复核重跑即可。
 
 **发布判据**：
 - `publish/NimBleImuHost.exe` 存在，体积 25–120 MB（脚本自己判） ✅ 81.6 MB
