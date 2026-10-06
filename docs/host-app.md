@@ -484,6 +484,8 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 
 **产物是快照，不是软链**（2026-09-23 被自己咬过一次）：中文化提交后我去验的是 `bin\`，用户双击 `publish\` 里 19:01 那份旧 exe，看到的仍是英文菜单。任何代码改动之后都要重跑 `publish-portable.ps1`，再按 `-ExePath` 复验。最近一次重发（2026-10-02，合并浅色主题 + 新图标后，`-Clean`）产物 81.6 MB，`-ExePath ../publish/NimBleImuHost.exe` 复验：标题栏新图标、浅色主题正常；`-PlotMenu` 四个中文标签在、按下「复制到剪贴板」剪贴板有图；仿真压测到达 500 Hz 丢帧 0、渲染 ~63 fps（`-SimRate 100` 因 §6.22 的下拉框弱点实际落到 500，属更严的负载，结论不变）；「停止」后读数冻结、再「开始」恢复。真机 BLE **未**在新 exe 上复跑（板子不在身边）——本次改动不碰采集/渲染热路径与 BLE 链路。验收截图为临时产物、收尾已清理，复核重跑即可。
 
+**2026-10-06 重发（坐标系方向重映射合入后，`-Clean`）**：产物 81.6 MB（85,535,956 B）。`-ExePath ../publish/NimBleImuHost.exe -SimRate 100` 复验：UIA 树里「坐标系方向」卡片与提示文案在、ComboBox 显示「默认」；仿真到达 99.4–100.1 Hz、丢帧 0、渲染 51–64 fps；截图确认浅色主题、3D、曲线与读数正常（§5.6）。同一份 exe 已用 `gh release upload v0.1.0 publish/NimBleImuHost.exe --clobber` 替换 GitHub Release `v0.1.0` 的资产并同步发布说明。真机 BLE 未在新 exe 上复跑（板子不在身边）——本次改动不碰采集/渲染热路径与 BLE 链路。
+
 **发布判据**：
 - `publish/NimBleImuHost.exe` 存在，体积 25–120 MB（脚本自己判） ✅ 81.6 MB
 - 仿真 + 真机两条路径用 `-ExePath` 跑通 ✅
@@ -560,7 +562,7 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 20. **右键菜单能中文，画布不能；而且改名会把功能改没** —— 第 7 条限制的是 Skia 画的像素文字；`ContextMenu` 是 WPF 控件，走系统字体回退，中文正常。但 ScottPlot 的 `ContextMenuItem` 是 **struct**：`items[i].Label = "自动缩放"` 改的是索引器返回的**副本**，界面上什么都不会变，必须取出→改→`items[i] = item` 写回。另外 `Menu` 属性在控件（`WpfPlotBase`）上，不在 `ScottPlot.Plot` 上，`Plot.Plot.Menu` 编译不过。改名只动了 `Label`，`OnInvoke` 靠写回原样带回去 —— 这条**看截图查不出来**，所以 `-PlotMenu` 会真按一次「复制到剪贴板」再验剪贴板里有图（§5.3.3）。
 21. **WPF 弹层不在主窗口的 UIA 子树里，而且只认前台真鼠标** —— `ContextMenu`/`Popup` 是独立顶层 HWND：从桌面根用 `TreeScope.Children` 找不到那个 `Menu` 节点，要 `Subtree`。`InvokePattern` 也打不开它 —— ScottPlot 只在真实鼠标输入上弹菜单，得 `SetCursorPos` + `mouse_event` 右键。而后台进程发的合成点击只会落到当时最前面的窗口，所以点之前必须破一次**前台锁**：假按一次 Alt（`keybd_event 0x12`）再 `SetForegroundWindow`，并且**临点前重申一次**（脚本自己跑着跑着前台就回去了）。`WpfPlot` 派生自 Panel，没有 `AutomationPeer`，压根不在树里，只能按几何定位：3D 视图（`AutomationId=Viewport`）底边到窗口底边之间那条带，取靠上的 1/3；取中点会掉进状态栏。
 22. **仿真速率下拉框的 `{DOWN}` 连发不可靠** —— 脚本假设初值是第 0 项，连发 N 次到位，但实测会漏按/多按（见过 `-SimRate 100` 选出 500 Hz、`-SimRate 250` 选出 20 Hz），而且**从不校验实际选中的速率**。§5.3.2 表里三行是状态行「（20/100/500 Hz）」与目标一致的那些运行，不一致的运行当场弃用。要把它变成可信压测开关，得改成"发完再读状态行核对，不符就重试"。
-23. **改完代码别忘了重发交付物** —— `publish\NimBleImuHost.exe` 是发布那一刻的快照，不会跟着 `bin\` 变。验收脚本默认打 `bin\`，用户双击的却是 `publish\`，两边不一致时"我验过了"就是假话（中文化那次就这么被戳穿了一回）。凡是给用户跑的产物，改完代码就重跑 `publish-portable.ps1`，再用 `-ExePath` 复验（§5.5）。
+23. **改完代码别忘了重发交付物** —— `publish\NimBleImuHost.exe` 是发布那一刻的快照，不会跟着 `bin\` 变。验收脚本默认打 `bin\`，用户双击的却是 `publish\`，两边不一致时"我验过了"就是假话（中文化那次就这么被戳穿了一回）。凡是给用户跑的产物，改完代码就重跑 `publish-portable.ps1`，再用 `-ExePath` 复验（§5.5）。GitHub Release 上的 exe 资产同样是快照：重发交付物后还要 `gh release upload <tag> publish/NimBleImuHost.exe --clobber` 换掉资产并同步发布说明，否则 release 页下载的仍是旧构建。
 24. **自定义 Button 模板会留下虚线焦点框** —— 换 `ControlTemplate` 只换了外观，`FocusVisualStyle` 还是系统那套点线框；UIA `Invoke` 或键盘操作把焦点留给按钮后，那圈虚线就一直在截图里。模板所在 Style 里加 `FocusVisualStyle="{x:Null}"`。
 25. **别给每帧重绘的控件套 `Effect`** —— `DropShadowEffect` 会让 WPF 每帧重渲染离屏位图，绘图卡 60 fps 下是纯亏。浅色主题要"浮起来"的感觉，用 1px 边框 + 浅灰底衬就够（§5.3.4）。
 
