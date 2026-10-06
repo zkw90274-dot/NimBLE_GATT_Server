@@ -155,6 +155,18 @@
 
         <Border Style="{StaticResource Card}" Margin="0,0,0,12">
           <StackPanel>
+            <TextBlock Text="坐标系方向" Style="{StaticResource SectionTitle}"/>
+            <ComboBox x:Name="CoordinateFrameCombo" Padding="6,3" HorizontalAlignment="Stretch"
+                      ItemsSource="{Binding CoordinateFrameOptions}"
+                      SelectedItem="{Binding SelectedCoordinateFrame}"
+                      DisplayMemberPath="Label"/>
+            <TextBlock Text="同时作用于 3D 模型与姿态角读数；底部曲线保持原始值"
+                       Style="{StaticResource HintText}" Margin="0,8,0,0" TextWrapping="Wrap"/>
+          </StackPanel>
+        </Border>
+
+        <Border Style="{StaticResource Card}" Margin="0,0,0,12">
+          <StackPanel>
             <TextBlock Text="姿态角（度）" Style="{StaticResource SectionTitle}"/>
             <Grid>
               <Grid.ColumnDefinitions>

@@ -3,6 +3,8 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using NimBleImuHost.Ble;
+using NimBleImuHost.Protocol;
+using NimBleImuHost.Settings;
 
 namespace NimBleImuHost.ViewModels;
 
@@ -41,12 +43,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private bool _isBusy;
     private ulong _generation;
     private BleDiscoveredDevice? _selectedDevice;
+    private CoordinateFramePreset _framePreset = CoordinateFramePreset.Default;
+    private CoordinateFrameChoice _selectedFrame = null!;
 
     public MainViewModel()
     {
         _ble = new WindowsBleImuSource();
         _sim = new SimulatedImuSource();
         _active = _sim;
+
+        // Restore the persisted coordinate frame. Assigning the field (not the property) keeps the ComboBox
+        // bound to a reference-equal list item so it shows the saved choice without raising PropertyChanged.
+        CoordinateFramePreset saved = SettingsStore.LoadCoordinateFrame();
+        _selectedFrame = CoordinateFrameOptions.FirstOrDefault(c => c.Preset == saved) ?? CoordinateFrameOptions[0];
+        _framePreset = _selectedFrame.Preset;
 
         _ble.DevicesChanged += (_, _) => RefreshDevices();
         Hook(_ble);
@@ -64,6 +74,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ICommand ConnectCommand { get; }
     public ICommand StartStopCommand { get; }
     public IReadOnlyList<double> SimRateOptions { get; } = [20, 100, 250, 500];
+
+    public IReadOnlyList<CoordinateFrameChoice> CoordinateFrameOptions { get; } =
+    [
+        new(CoordinateFramePreset.Default, "默认"),
+        new(CoordinateFramePreset.YawLeft90, "左转 90°（绕竖直轴）"),
+        new(CoordinateFramePreset.YawRight90, "右转 90°（绕竖直轴）"),
+        new(CoordinateFramePreset.TurnAround180, "调头 180°（绕竖直轴）"),
+        new(CoordinateFramePreset.Inverted180, "倒置 180°（绕机头轴）"),
+        new(CoordinateFramePreset.SideRoll90, "侧翻 90°（绕机头轴）"),
+    ];
 
     public bool UseBle
     {
@@ -107,6 +127,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
     }
 
+    /// <summary>Selected coordinate-frame re-orientation. Persisted on change; the render tick reads it live.</summary>
+    public CoordinateFrameChoice SelectedCoordinateFrame
+    {
+        get => _selectedFrame;
+        set
+        {
+            if (_selectedFrame == value) return;
+            _selectedFrame = value;
+            _framePreset = value.Preset;
+            OnPropertyChanged();
+            SettingsStore.SaveCoordinateFrame(value.Preset);
+        }
+    }
+
     public bool IsRunning => _active.State == ImuSourceState.Streaming;
     public string RunButtonText => IsRunning ? "停止" : "开始";
 
@@ -124,6 +158,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     /// <summary>Consumer thread only: moves unread samples into <paramref name="destination"/>.</summary>
     public int DrainInto(Span<ImuSample> destination) => _ring.ReadNewestInto(destination);
+
+    /// <summary>
+    /// UI thread only: re-orient a raw attitude into the selected frame. The render tick feeds the result to
+    /// BOTH the 3D view and the numeric readouts so they can never diverge; the chart consumes raw samples.
+    /// </summary>
+    public AttitudePacket ApplyFrame(AttitudePacket raw) => CoordinateFrame.Transform(_framePreset, raw);
 
     public async Task ToggleRunAsync()
     {

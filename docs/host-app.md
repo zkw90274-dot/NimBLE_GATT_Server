@@ -63,14 +63,20 @@ host/
 ├── src/NimBleImuHost/          # WPF 宿主
 │   ├── Protocol/               # 纯函数解码（可单测，零 UI 依赖）
 │   │   ├── ProtocolConstants.cs
-│   │   └── AttitudePacket.cs
+│   │   ├── AttitudePacket.cs
+│   │   └── CoordinateFrame.cs  # 坐标系方向重映射（欧拉↔四元数往返，纯函数，见 §5.6）
 │   ├── Ble/                    # 数据源抽象 + 采集管线
 │   │   ├── IImuSource.cs       # IBleImuSource / IImuSource
 │   │   ├── ImuSample.cs        # (Attitude, MonoTicks) —— 驱动边界打时间戳
 │   │   ├── AttitudeRingBuffer.cs  # SPSC 无锁环 + 丢帧计数
 │   │   ├── SimulatedImuSource.cs  # 可调速率（1–2000 Hz）压测源
 │   │   └── WindowsBleImuSource.cs
-│   ├── ViewModels/MainViewModel.cs
+│   ├── Settings/               # 轻量 JSON 持久化（%LocalAppData%，见 §5.6）
+│   │   ├── AppSettings.cs
+│   │   └── SettingsStore.cs
+│   ├── ViewModels/
+│   │   ├── MainViewModel.cs
+│   │   └── CoordinateFrameChoice.cs  # (预设, 中文标签) record，供 ComboBox 绑定
 │   ├── Views/Attitude3DView.*  # 纯 WPF Viewport3D（不引第三方 3D 包）
 │   └── MainWindow.*
 ├── tests/NimBleImuHost.Tests/
@@ -133,17 +139,22 @@ MainWindow 渲染 tick（DispatcherTimer，请求 8 ms → 实测 ~64 fps）
 |---|---|
 | `Protocol/ProtocolConstants.cs` | ✅ UUID / 设备名 / 12B 契约常量 |
 | `Protocol/AttitudePacket.cs` | ✅ LE float32 三元组编解码 |
+| `Protocol/CoordinateFrame.cs` | ✅ 坐标系方向重映射：欧拉↔四元数往返 + 6 个预设，恒等快速路径（见 §5.6） |
+| `Settings/AppSettings.cs` / `SettingsStore.cs` | ✅ `%LocalAppData%\NimBleImuHost\settings.json` 轻量持久化，缺失/损坏静默回落默认 |
 | `Ble/IImuSource.cs` / `ImuSample.cs` | ✅ 抽象与样本模型（改为 `Stopwatch` 单调刻度） |
 | `Ble/AttitudeRingBuffer.cs` | ✅ SPSC 无锁环 + 丢帧计数，单测覆盖顺序/溢出/守恒/吞吐 |
 | `Ble/SimulatedImuSource.cs` | ✅ 速率可调 1–2000 Hz，`Stopwatch` 定拍（压测用） |
 | `Ble/WindowsBleImuSource.cs` | ✅ 扫描 / 连接 / CCCD / Notify 解码，**已真机实测**（2026-09-23，见 §5.4.1） |
-| `ViewModels/MainViewModel.cs` | ✅ 生产侧只写环；读数与统计只在渲染 tick 更新 |
-| `Views/Attitude3DView.xaml(.cs)` | ✅ 板体 + 姿态旋转 + 世界轴 |
-| `MainWindow.xaml` | ✅ 左侧卡片（数据源/姿态角/流水线/提示）+ 仿真速率选择 + 右侧 3D/曲线 + 底部状态栏；浅色主题见 §5.3.4 |
-| `MainWindow.xaml.cs` | ✅ 渲染 tick 拉取环形缓冲，`SignalXY` 预分配数组原地更新，roll/pitch 左轴 + yaw 右轴；右键菜单四项中文化（§5.3.3） |
-| `NimBleImuHost.csproj` | ✅ TFM `net8.0-windows10.0.19041.0`，引用 `ScottPlot.WPF 5.1.59` |
+| `ViewModels/MainViewModel.cs` | ✅ 生产侧只写环；读数与统计只在渲染 tick 更新；坐标系预设选项 + 变更即存盘 |
+| `ViewModels/CoordinateFrameChoice.cs` | ✅ (预设, 中文标签) record，供 ComboBox 绑定与选中匹配 |
+| `Views/Attitude3DView.xaml(.cs)` | ✅ 板体 + 姿态旋转 + 世界轴（坐标重映射不改此文件，见 §5.6） |
+| `MainWindow.xaml` | ✅ 左侧卡片（数据源/坐标系方向/姿态角/流水线/提示）+ 仿真速率选择 + 右侧 3D/曲线 + 底部状态栏；浅色主题见 §5.3.4 |
+| `MainWindow.xaml.cs` | ✅ 渲染 tick 拉取环形缓冲，`SignalXY` 预分配数组原地更新，roll/pitch 左轴 + yaw 右轴；坐标重映射在此单点变换（§5.6）；右键菜单四项中文化（§5.3.3） |
+| `NimBleImuHost.csproj` | ✅ TFM `net8.0-windows10.0.19041.0`，引用 `ScottPlot.WPF 5.1.59`，`InternalsVisibleTo` 测试工程 |
 | `tests/AttitudePacketTests.cs` | ✅ 14 个用例全绿（含真机 4 组 hex 向量回放） |
 | `tests/AttitudeRingBufferTests.cs` | ✅ 10 个用例全绿（顺序、回绕、溢出计数、生产消费守恒、热路径吞吐） |
+| `tests/CoordinateFrameTests.cs` | ✅ 11 个用例全绿（恒等透传、各预设、往返、范围、死锁 clamp、约定回归） |
+| `tests/SettingsStoreTests.cs` | ✅ 6 个用例全绿（缺失/损坏/未知值回落默认、保存后往返） |
 | `scripts/capture-ui.ps1` | ✅ 启动 + UIA 点击/选速率 + 窗口截图 + 读数冻结判定，无人值守 UI 验收；`-Mode ble` 走真机，`-ExePath` 直接验收发布产物，`-PlotMenu` 验右键菜单（§5.3.3） |
 | `scripts/publish-portable.ps1` | ✅ 自包含单文件发布 + 体积判据（实测 81.6 MB，见 §5.5） |
 | `scripts/make-icon.ps1` | ✅ 生成 `app.ico`，重跑逐字节一致（见 §5.3.4） |
@@ -482,6 +493,49 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 
 ---
 
+### 5.6 坐标系方向重映射（预设下拉）—— 已完成（2026-10-06）
+
+**做什么**：左侧「坐标系方向」下拉框，用一个固定旋转重新表达收到的姿态，同时改变 **3D 模型** 与 **姿态角（度）数值读数**；选「默认」即恢复原样。选择会持久化，重启后仍在。**底部 roll/pitch/yaw 曲线保持原始值不变**（这是明确的设计取舍：曲线是"设备发来的原始遥测"，读数与 3D 是"当前坐标系下的解读"）。
+
+**预设**（`Protocol/CoordinateFrame.cs` 的 `CoordinateFramePreset`；轴为显示世界系 X=右/Y=上/Z=前）：
+
+| 预设 | 标签 | 旋转 | 对水平板的效果 |
+|---|---|---|---|
+| `Default` | 默认 | 恒等 | **快速路径**：原包逐位返回，不走往返 |
+| `YawLeft90` | 左转 90°（绕竖直轴） | +Y·+90° | yaw → ±90 |
+| `YawRight90` | 右转 90°（绕竖直轴） | +Y·−90° | yaw → ∓90 |
+| `TurnAround180` | 调头 180°（绕竖直轴） | +Y·180° | yaw → ±180 |
+| `Inverted180` | 倒置 180°（绕机头轴） | +Z·180° | roll → ±180 |
+| `SideRoll90` | 侧翻 90°（绕机头轴） | +Z·+90° | roll → ±90 |
+
+> 左转/右转的符号取决于相机朝向，看着别扭就在 `GetRotation` 里对调那两行的 ±90°，数学对称。
+
+**数学（欧拉↔四元数往返）**：`Attitude3DView` 把包按 roll→Z(+)、pitch→X(**−**)、yaw→Y(+) 且顺序 roll→pitch→yaw 施加，等价于列向量旋转 `R_Y(yaw)·R_X(−pitch)·R_Z(roll)`。`CoordinateFrame`：
+
+1. `ToDisplayQuaternion(p)` = `AxisAngle(UnitY, yaw) * AxisAngle(UnitX, −pitch) * AxisAngle(UnitZ, roll)` —— **精确复现**当前屏幕姿态（pitch 取负是关键；单测 `ToDisplayQuaternion_MatchesCreateFromYawPitchRoll` 钉住此约定）。
+2. 世界系左乘预设：`q' = GetRotation(preset) * q_display`。
+3. `FromDisplayQuaternion(q')` 按 YXZ 顺序反解：`pitchX = asin(clamp(2(wx−yz), −1, 1))`（**必须 clamp**，否则浮点漂移过 ±1 → NaN）、`rollZ = atan2(2(xy+wz), 1−2(x²+z²))`、`yawY = atan2(2(xz+wy), 1−2(x²+y²))`，输出 `(rollZ, −pitchX, yawY)`。输出的 −pitch 抵消输入的 −pitch，故**恒等往返逐位精确**。
+4. `asin` 天然给 pitch∈[−90,90]、两个 `atan2` 给 [−180,180]，与 `docs/host-integration.md §2.1` 范围一致。
+
+**防 3D 与读数分叉（唯一变换点）**：变换只在 `MainWindow.xaml.cs` 的 `OnRenderTick` 里做一次 —— 取最新样本后 `_vm.ApplyFrame(raw.Attitude)`，把**同一个** `AttitudePacket` 同时喂给 `AttitudeView.SetAttitude` 和 `_vm.ReportFrame`。绝不在 `ReportFrame` 内部再变换（那会造出第二条路径导致二者不一致）。因为 `SetAttitude` 复用的正是 `ToDisplayQuaternion` 假设的那套轴映射，`To(变换后的包) == q'`，模型与读数不可能漂移。chart 的 `Append` 循环在变换之前，故曲线拿到的是原始值。
+
+**万向节死锁**：设备只发欧拉角（无四元数），显示 pitch 接近 ±90° 时 roll/yaw 退化（见 [imu.md §4.10](imu.md)、[host-integration.md §4.7](host-integration.md)）。本功能不加重它：`Default` 走快速路径完全绕开往返；6 个预设都不会把水平板推到该奇异点；`FromDisplayQuaternion` 的 clamp 防 NaN。
+
+**轴 gizmo 保持世界固定**（不改 `Attitude3DView.BuildScene`）：世界系左乘下，固定 gizmo 给用户一个稳定的"真实上/前"参照来看板子被重定向；让它跟着转反而与板子自身坐标系无法区分。同时不动 `BuildScene` 保住了 `capture-ui.ps1` 依赖的 `Viewport` AutomationId 锚点。
+
+**持久化**：`Settings/SettingsStore.cs` 写 `%LocalAppData%\NimBleImuHost\settings.json`（`AppSettings` POCO，预设存**枚举名字符串**，抗枚举重排）。选 `%LocalAppData%` 而非 exe 同目录：交付物是便携单文件 exe（§5.5），可能落在只读目录，且需按 Windows 用户隔离偏好。`MainViewModel` 构造时 `LoadCoordinateFrame()` 恢复（构造函数只跑一次，即启动加载）；`SelectedCoordinateFrame` setter 里 `SaveCoordinateFrame()` 变更即存。所有读写 try/catch，缺失/损坏/未知枚举名一律回落 `Default`，绝不让渲染循环崩。`_framePreset` 只在 UI 线程读写（ComboBox 写、渲染 tick 读），下个 8 ms tick 生效，无需加锁。
+
+**验收**：本功能走手动/截图（`capture-ui.ps1` 的 ComboBox 自动化不可靠，见 §6.11/§6.22；新增命名控件不触碰既有 Name/状态文本，§5.3.4 契约不受影响）。要点：默认 == 改动前逐位一致；调头 180° 时 yaw 读数与 3D 同步翻转、底部曲线不变；重启恢复上次选择；删/坏 json 仍启动并回默认。改动碰了 UI 但**没碰**采集/渲染热路径与 BLE 链路；交付前仍需按 §5.5/§6.23 重跑 `publish-portable.ps1` 并用 `-ExePath` 复验。
+
+**截图验收结果（2026-10-06，仿真 20 Hz，computer-use 真鼠标/键盘 + 窗口截图）**：
+- 新增「坐标系方向」卡片渲染正常，含 6 项与提示文案；ComboBox 用 §6.11 的"闭合下拉框发 ↑/↓ 直接改选中项"驱动（弹层是独立 HWND，窗口截图看不到它，故按闭合态标签核对）。
+- **调头 180°**：3D 板子绕竖直轴转 180°（机头标记从前左移到后中），yaw 读数 −150.55 而曲线右端原始 yaw ≈ +29（−150.55+180=+29.45）→ **读数已变换、曲线保持原始**，符合设计。
+- **倒置 180°**：roll 读数 +172.38（≈±180）、板子上下颠倒（机头标记转到板底），曲线 red roll 右端 ≈ −8 = 原始值（读数 = −原始）。
+- **持久化**：选倒置后 `%LocalAppData%\NimBleImuHost\settings.json` 写入 `"CoordinateFrame": "Inverted180"`；杀进程重启后下拉框自动恢复「倒置 180°」；改回「默认」后 json 回落 `"Default"`。
+- 丢帧恒 0、渲染 ~20 fps（20 Hz 源），流水线未受影响。
+
+---
+
 ## 6. 跨组件的坑（上位机侧）
 
 1. **NuGet `path1` null** —— 本机缺 `PROGRAMFILES`/`PROGRAMFILES(X86)`，见 §4.2。与 idf.py 无关。
@@ -520,6 +574,7 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 | LED 写 `0x1815` | `Ble/` 新特征客户端 | 姿态特征 UUID |
 | 序列号/时间戳协议扩展 | **新特征 UUID**（勿扩 12B 载荷） | 现有解码容错 |
 | 四元数显示 | 服务端加字段后 `Protocol` 加版本化解析 | 3D 视图接口 |
+| 坐标系重映射 | `Protocol/CoordinateFrame.cs`（预设 + 欧拉↔四元数往返）+ `Settings/`（持久化），变换单点在 `OnRenderTick`（§5.6） | `Attitude3DView.SetAttitude`、12B 载荷、chart 原始路径 |
 | 真机 ≥100 fps | 固件 `CONFIG_IMU_NOTIFY_PERIOD_MS` + NimBLE 连接参数更新 + DLE；上位机侧把 TFM 抬到 `10.0.22000.0` 后请求 `ThroughputOptimized` | 12B 载荷、`AttitudeRingBuffer`、`SignalXY` 渲染路径 |
 | 更长回看窗口 | `MainWindow.DisplayPoints`（当前 1200）与环容量 16384 都是常量 | 采集侧零分配热路径 |
 
@@ -528,7 +583,7 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-portable.ps1 -Clean
 ## 8. 验收定义（DoD）
 
 - [x] `dotnet build -c Release` 0 error（实测 0 warning / 0 error）  
-- [x] `dotnet test` 全绿（24 passed：协议 14 + 环形缓冲 10，含真机 hex 向量）  
+- [x] `dotnet test` 全绿（41 passed：协议 14 + 环形缓冲 10 + 坐标重映射 11 + 设置持久化 6，含真机 hex 向量）  
 - [x] 仿真模式 UI 三件套（数值/曲线/3D）流畅（见 §5.3.1）  
 - [x] ≥100 fps 抗压：仿真 100 Hz 与 500 Hz 到达速率达标、丢帧恒为 0、渲染 ~60 fps（见 §5.3.2）  
 - [x] 真机 BLE 流达到连接间隔允许的速率（实测 69.2–74.8 Hz）、丢帧恒为 0、停止后可自动重连恢复（见 §5.4.1）。**轴向/断电/断链三项仍需人工**（见 §5.4）  

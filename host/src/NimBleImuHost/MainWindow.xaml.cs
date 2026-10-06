@@ -137,6 +137,12 @@ public partial class MainWindow : Window
         }
 
         var newest = taken > 0 ? _scratch[taken - 1] : (ImuSample?)null;
+
+        // Coordinate-frame remap: transform ONCE and feed the same result to both the 3D model and the numeric
+        // readouts so they can never diverge. The chart (Append loop above) intentionally stays RAW.
+        if (newest is { } raw)
+            newest = new ImuSample(_vm.ApplyFrame(raw.Attitude), raw.MonoTicks);
+
         if (newest is { } sample)
             AttitudeView.SetAttitude(sample.Attitude);
 

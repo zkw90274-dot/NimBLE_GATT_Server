@@ -21,4 +21,9 @@
     <PackageReference Include="ScottPlot.WPF" Version="5.1.59" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Lets the test project exercise internal transform/settings helpers without widening the public API. -->
+    <InternalsVisibleTo Include="NimBleImuHost.Tests" />
+  </ItemGroup>
+
 </Project>
